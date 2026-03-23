@@ -12,9 +12,11 @@
  * into the emulator-data/ directory format that Firebase emulators can import.
  */
 
-const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
+
+// firebase-admin is installed in functions/, not the root
+const admin = require(path.join(__dirname, '..', 'functions', 'node_modules', 'firebase-admin'));
 
 const SERVICE_ACCOUNT_PATH = path.join(__dirname, '..', 'functions', 'service-account.json');
 

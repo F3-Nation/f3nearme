@@ -75,10 +75,10 @@ npm run emulator
 # Storage:            http://localhost:9199
 ```
 
-The emulator persists data between runs in `emulator-data/`. To start fresh:
+The emulator persists data between runs in `emulator-data/`. To start with an empty database:
 
 ```bash
-npm run emulator:fresh   # starts without importing previous data (but exports on exit)
+npm run emulator:empty   # starts without importing previous data (but still exports on exit)
 ```
 
 ### Running the Angular app
@@ -91,20 +91,27 @@ npm start   # ng serve on http://localhost:4200
 
 To connect the Angular app to the emulators, set `useEmulators: true` in `src/environments/environment.ts`.
 
-### Seeding emulator with production data
+### Seeding emulator with production data (first time only)
+
+You only need to do this **once**. After the initial seed, the emulator auto-exports its
+data on exit to `emulator-data/`, and `npm run emulator` auto-imports it on startup.
 
 ```bash
-# Step 1: Export from production Firestore (requires service-account.json)
+# Step 1: Export from production Firestore (one-time, requires service-account.json)
 node scripts/export-prod-data.js
 
-# Step 2: Start emulators fresh
-npm run emulator:fresh
-
-# Step 3: In another terminal, seed the running emulator
-node scripts/seed-emulator.js
+# Step 2: Start emulator, seed it, and keep running (one command)
+npm run emulator:seed
 ```
 
-After the initial seed, subsequent `npm run emulator` will auto-import/export the `emulator-data/` directory.
+The `emulator:seed` command starts a fresh emulator, waits for Firestore to be ready,
+imports the seed data, and keeps running. Once it finishes seeding you'll see:
+
+```
+[seed] Done! Emulator is seeded and running. Press Ctrl-C to stop.
+```
+
+From now on, just use `npm run emulator` — your data will persist automatically.
 
 ### Triggering scheduled functions locally
 

@@ -9,9 +9,11 @@
  *   - emulator-data/seed.json (created by export-prod-data.js)
  */
 
-const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
+
+// firebase-admin is installed in functions/, not the root
+const admin = require(path.join(__dirname, '..', 'functions', 'node_modules', 'firebase-admin'));
 
 const SEED_FILE = path.join(__dirname, '..', 'emulator-data', 'seed.json');
 

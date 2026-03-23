@@ -10,7 +10,7 @@
     "logs": "firebase functions:log",
     "emulator": "npm run build && firebase emulators:start --import=../emulator-data --export-on-exit=../emulator-data",
     "emulator:debug": "npm run build && firebase emulators:start --import=../emulator-data --export-on-exit=../emulator-data --inspect-functions",
-    "emulator:fresh": "npm run build && firebase emulators:start --export-on-exit=../emulator-data",
+    "emulator:empty": "npm run build && firebase emulators:start --export-on-exit=../emulator-data",
     "export-prod-data": "GOOGLE_APPLICATION_CREDENTIALS=./service-account.json node ../scripts/export-prod-data.js"
   },
   "engines": {
