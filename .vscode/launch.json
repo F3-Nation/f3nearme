@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to Functions Emulator",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "restart": true,
+            "timeout": 60000,
+            "skipFiles": ["<node_internals>/**"],
+            "sourceMapPathOverrides": {
+                "*": "${workspaceFolder}/functions/lib/*"
+            },
+            "outFiles": ["${workspaceFolder}/functions/lib/**/*.js"]
+        },
+        {
+            "name": "Launch Angular App",
+            "type": "chrome",
+            "request": "launch",
+            "url": "http://localhost:4200",
+            "webRoot": "${workspaceFolder}/src"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Full Stack Debug",
+            "configurations": ["Attach to Functions Emulator", "Launch Angular App"]
+        }
+    ]
+}

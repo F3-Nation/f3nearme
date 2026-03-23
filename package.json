@@ -11,7 +11,11 @@
     "lint": "ng lint",
     "e2e": "ng e2e",
     "build:prod": "ionic build --prod --release",
-    "deploy": "npm run build:prod && firebase deploy --only hosting"
+    "deploy": "npm run build:prod && firebase deploy --only hosting",
+    "emulator": "npm --prefix functions run emulator",
+    "emulator:debug": "npm --prefix functions run emulator:debug",
+    "emulator:fresh": "npm --prefix functions run emulator:fresh",
+    "export-prod-data": "node scripts/export-prod-data.js"
   },
   "private": true,
   "dependencies": {

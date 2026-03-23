@@ -1436,3 +1436,40 @@ export const adminSyncAllBeatdowns = functions.https.onCall(async (data) => {
     throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Failed to sync beatdowns');
   }
 });
+
+/**
+ * Local-only HTTP triggers for invoking scheduled functions during development.
+ * These endpoints only exist when running in the Firebase Emulator.
+ * Trigger via: curl http://localhost:5001/f3-workout/us-central1/localTriggerSync
+ */
+if (process.env.FUNCTIONS_EMULATOR === 'true') {
+  exports.localTriggerSync = functions.https.onRequest(async (req: Request, res: Response) => {
+    console.log(`[LOCAL] Triggering syncAllBeatdowns`);
+    try {
+      const db = admin.firestore();
+      await syncAllBeatdowns(db);
+      // JSON cache writes to Cloud Storage which is not emulated locally - best-effort only
+      try {
+        await generateJsonCache(db);
+      } catch (cacheError) {
+        console.warn(`[LOCAL] JSON cache generation failed (expected without Storage emulator):`, cacheError);
+      }
+      res.status(200).json({ message: 'Sync completed' });
+    } catch (error) {
+      console.error(`[LOCAL] Error:`, error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  exports.localTriggerJsonCache = functions.https.onRequest(async (req: Request, res: Response) => {
+    console.log(`[LOCAL] Triggering generateJsonCache`);
+    try {
+      const db = admin.firestore();
+      await generateJsonCache(db);
+      res.status(200).json({ message: 'JSON cache generation completed' });
+    } catch (error) {
+      console.error(`[LOCAL] Error:`, error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
