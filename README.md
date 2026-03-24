@@ -95,7 +95,7 @@ curl -s http://localhost:8080 >/dev/null 2>&1 && echo "Running" || echo "Stopped
 If the terminal is gone or the emulator is stuck, kill the processes by port:
 
 ```bash
-lsof -ti :5001 -ti :8080 -ti :4000 | xargs kill -9
+lsof -ti :5001 -ti :8080 -ti :8085 -ti :4000 | xargs -r kill -9
 rm -f /tmp/hub-f3-workout.json   # clean up stale hub file
 ```
 
