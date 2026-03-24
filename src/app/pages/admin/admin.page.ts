@@ -22,6 +22,12 @@ interface SyncProgress {
 })
 
 export class AdminPage implements OnInit {
+  // Full sync properties
+  fullSyncDryRun: boolean = true;
+  fullSyncLoading: boolean = false;
+  fullSyncResults: any = null;
+  fullSyncError: boolean = false;
+
   webhookAfterDate: string = '';
   webhookDryRun: boolean = false;
   webhookLoading: boolean = false;
@@ -45,6 +51,24 @@ export class AdminPage implements OnInit {
 
   ngOnInit() {
     this.setRecentDate(1);
+  }
+
+  async runFullSync() {
+    this.fullSyncLoading = true;
+    this.fullSyncError = false;
+    this.fullSyncResults = null;
+
+    try {
+      const callable = this.fns.httpsCallable('adminSyncAllBeatdowns');
+      const response = await callable({ dryRun: this.fullSyncDryRun }).toPromise();
+      this.fullSyncResults = response;
+      this.fullSyncError = false;
+    } catch (error) {
+      this.fullSyncResults = error;
+      this.fullSyncError = true;
+    } finally {
+      this.fullSyncLoading = false;
+    }
   }
 
   setRecentDate(days: number) {

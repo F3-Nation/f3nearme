@@ -28,7 +28,8 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 | `scheduledSyncAllBeatdowns` | Pub/Sub (hourly) | Full sync from F3 API to Firestore |
 | `scheduledRegenerateJsonCache` | Pub/Sub (hourly) | Regenerate `all.json` from Firestore |
 | `mapWebhook` | HTTP POST | Processes webhook notifications for real-time updates |
-| `adminSyncAllBeatdowns` | Callable | Manually trigger full sync |
+| `adminSyncAllBeatdowns` | Callable | Manually trigger full sync (supports `dryRun`) |
+| `localTriggerSync` | HTTP GET | Emulator-only endpoint to trigger sync |
 | `adminRegenerateJsonCache` | Callable | Manually regenerate JSON cache |
 | `adminGetAllLocationIds` | Callable | List all location IDs from API |
 | `adminUpdateSingleLocation` | Callable | Update a single location |
@@ -81,6 +82,23 @@ The emulator persists data between runs in `emulator-data/`. To start with an em
 npm run emulator:empty   # starts without importing previous data (but still exports on exit)
 ```
 
+### Stopping the emulator
+
+**Ctrl-C** in the emulator terminal is the cleanest way — it exports data before shutting down.
+
+Check if the emulator is still running:
+
+```bash
+curl -s http://localhost:8080 >/dev/null 2>&1 && echo "Running" || echo "Stopped"
+```
+
+If the terminal is gone or the emulator is stuck, kill the processes by port:
+
+```bash
+lsof -ti :5001 -ti :8080 -ti :4000 | xargs kill -9
+rm -f /tmp/hub-f3-workout.json   # clean up stale hub file
+```
+
 ### Running the Angular app
 
 In a separate terminal:
@@ -121,25 +139,45 @@ Scheduled functions (Pub/Sub triggers) can't be invoked from the Emulator UI dir
 # Trigger full sync (syncAllBeatdowns + generateJsonCache)
 curl http://localhost:5001/f3-workout/us-central1/localTriggerSync
 
+# Dry run — see what would change without writing to Firestore
+curl "http://localhost:5001/f3-workout/us-central1/localTriggerSync?dryRun=true"
+
 # Trigger only JSON cache regeneration
 curl http://localhost:5001/f3-workout/us-central1/localTriggerJsonCache
 ```
 
 These endpoints only exist in the emulator — they are not deployed to production.
 
-### Writing to production Firestore
+### Running sync against production Firestore
 
-For running a manual sync against the **real** production Firestore (not the emulator):
+You can run your **local** sync logic against the **real** production Firestore without deploying.
+This requires `functions/service-account.json`.
 
 ```bash
-# Option 1: Use the Firebase Functions shell (connects to real Firebase services)
-cd functions && npm run shell
-# Then in the shell:
-#   adminSyncAllBeatdowns({})
+# Dry run — preview what would change (safe, read-only)
+npm run sync:dry
 
-# Option 2: Use the admin page in the deployed app
-# Navigate to /admin and use the sync controls
+# Live — actually write changes (prompts for confirmation)
+npm run sync:live
 ```
+
+Example dry-run output:
+
+```
+============================================================
+  🔍  DRY RUN — no changes will be written to Firestore
+  📦  Project: f3-workout
+============================================================
+
+[SYNC] Found 7742 existing beatdowns in Firestore
+[SYNC] Found 6529 events in API
+[SYNC] Found 67 beatdowns to write (0 new, 0 updated, 67 undeleted, 6364 unchanged)
+[SYNC] DRY RUN completed in 5867ms
+
+{ newBeatdowns: 0, updatedBeatdowns: 0, undeletedBeatdowns: 67, ... dryRun: true }
+```
+
+You can also trigger syncs from the **admin page** (`/admin`) in the deployed app.
 
 ## Debugging Functions (step-through)
 
@@ -211,7 +249,9 @@ firebase functions:config:set f3.client="f3nearme"
 │   └── assets/
 ├── scripts/                # Local development utility scripts
 │   ├── export-prod-data.js  # Export prod Firestore to seed file
-│   └── seed-emulator.js     # Import seed data into running emulator
+│   ├── run-sync.js          # Run sync against prod without deploying
+│   ├── seed-emulator.js     # Import seed data into running emulator
+│   └── start-and-seed.js    # One-command emulator start + seed
 ├── .vscode/
 │   └── launch.json          # VS Code debug configurations
 ├── firebase.json            # Firebase config (hosting, functions, emulators)

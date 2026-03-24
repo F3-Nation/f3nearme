@@ -5,6 +5,37 @@
 </ion-header>
 
 <ion-content class="ion-padding">
+  <!-- Full Sync Section -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>⚡ Full Beatdown Sync</ion-card-title>
+      <ion-card-subtitle>Sync all beatdowns from the F3 API into Firestore (new, updated, undeleted, deleted)</ion-card-subtitle>
+    </ion-card-header>
+    
+    <ion-card-content>
+      <ion-item>
+        <ion-checkbox [(ngModel)]="fullSyncDryRun"></ion-checkbox>
+        <ion-label class="ion-margin-start">Dry Run (preview changes without writing)</ion-label>
+      </ion-item>
+      
+      <ion-button 
+        (click)="runFullSync()" 
+        [disabled]="fullSyncLoading"
+        [color]="fullSyncDryRun ? 'primary' : 'warning'"
+        expand="block" 
+        class="ion-margin-top">
+        <ion-spinner name="crescent" *ngIf="fullSyncLoading"></ion-spinner>
+        <span *ngIf="!fullSyncLoading">{{ fullSyncDryRun ? 'Preview Sync (Dry Run)' : 'Run Full Sync' }}</span>
+      </ion-button>
+      
+      <div *ngIf="fullSyncResults" class="results ion-margin-top">
+        <ion-text [color]="fullSyncError ? 'danger' : 'success'">
+          <pre>{{ fullSyncResults | json }}</pre>
+        </ion-text>
+      </div>
+    </ion-card-content>
+  </ion-card>
+
   <!-- Webhook Re-run Section -->
   <ion-card>
     <ion-card-header>

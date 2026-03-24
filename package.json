@@ -16,7 +16,9 @@
     "emulator:debug": "npm --prefix functions run emulator:debug",
     "emulator:empty": "npm --prefix functions run emulator:empty",
     "emulator:seed": "node scripts/start-and-seed.js",
-    "export-prod-data": "node scripts/export-prod-data.js"
+    "export-prod-data": "node scripts/export-prod-data.js",
+    "sync:dry": "npm --prefix functions run build && node scripts/run-sync.js",
+    "sync:live": "npm --prefix functions run build && node scripts/run-sync.js --live"
   },
   "private": true,
   "dependencies": {
