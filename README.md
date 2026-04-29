@@ -40,7 +40,6 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 
 - **Node.js 20.x** (`node -v` to verify)
 - **Java 17+** (required by Firebase emulators — `sudo apt install openjdk-17-jre-headless`)
-- **Firebase CLI** (`npm install -g firebase-tools`)
 - **Ionic CLI** (`npm install -g @ionic/cli`)
 - **Firebase service account** — place at `functions/service-account.json` (gitignored)
 
@@ -49,7 +48,7 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 ```bash
 # Clone and install
 git clone <repo-url> && cd f3nearme
-npm install
+npm install  # installs repo-local dev tools, including firebase-tools
 cd functions && npm install && cd ..
 
 # Configure local environment for Cloud Functions
@@ -60,6 +59,8 @@ cp functions/.env.example functions/.env
 # Download from: Firebase Console > Project Settings > Service Accounts > Generate new private key
 cp /path/to/your/service-account.json functions/service-account.json
 ```
+
+The Firebase CLI is installed locally from the root `package.json`, so commands like `npm run emulator` work without a global `firebase` install.
 
 ## Local Development
 
