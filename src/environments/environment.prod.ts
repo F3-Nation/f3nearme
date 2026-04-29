@@ -10,5 +10,11 @@ export const environment = {
     measurementId: 'G-K1KK3EEV9H',
   },
   // Base URL for JSON data files served from Cloud Storage
-  dataUrl: 'https://storage.googleapis.com/f3-workout.appspot.com/data'
+  dataUrl: 'https://storage.googleapis.com/f3-workout.appspot.com/data',
+  useEmulators: false,
+  emulators: {
+    firestore: { host: 'localhost', port: 8080 },
+    functions: { host: 'localhost', port: 5001 },
+    storage: { host: 'localhost', port: 9199 },
+  }
 };

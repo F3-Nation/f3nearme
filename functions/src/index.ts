@@ -7,6 +7,7 @@
 
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 import { Request, Response } from 'express';
 import { Storage } from '@google-cloud/storage';
 
@@ -304,8 +305,8 @@ async function updateBeatdown(db: admin.firestore.Firestore, beatdown: Beatdown,
       .doc(existingId)
       .update({
         deleted: true,
-        deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        deletedAt: FieldValue.serverTimestamp(),
+        lastUpdated: FieldValue.serverTimestamp()
       });
   }
 
@@ -314,7 +315,7 @@ async function updateBeatdown(db: admin.firestore.Firestore, beatdown: Beatdown,
       .doc(docId)
       .set({
         ...beatdown,
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        lastUpdated: FieldValue.serverTimestamp()
       }, { merge: true });
 }
 
@@ -386,7 +387,7 @@ async function updateLocationBeatdowns(db: admin.firestore.Firestore, locationId
         const docRef = db.collection('beatdowns').doc(docId);
         writeBatch.set(docRef, {
           ...beatdown,
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: FieldValue.serverTimestamp()
         }, { merge: true });
       }
       await writeBatch.commit();
@@ -410,8 +411,8 @@ async function updateLocationBeatdowns(db: admin.firestore.Firestore, locationId
         for (const doc of batch) {
           writeBatch.update(doc.ref, {
             deleted: true,
-            deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-            lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            deletedAt: FieldValue.serverTimestamp(),
+            lastUpdated: FieldValue.serverTimestamp()
           });
         }
         await writeBatch.commit();
@@ -511,8 +512,8 @@ async function deleteBeatdownsByLocation(db: admin.firestore.Firestore, location
         console.log(`[DB] Marking doc ${doc.id} for soft deletion`);
         writeBatch.update(doc.ref, {
           deleted: true,
-          deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          deletedAt: FieldValue.serverTimestamp(),
+          lastUpdated: FieldValue.serverTimestamp()
         });
       });
       await writeBatch.commit();
@@ -558,8 +559,8 @@ async function deleteBeatdownsByEvent(db: admin.firestore.Firestore, eventId: nu
         console.log(`[DB] Marking doc ${doc.id} for soft deletion`);
         writeBatch.update(doc.ref, {
           deleted: true,
-          deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          deletedAt: FieldValue.serverTimestamp(),
+          lastUpdated: FieldValue.serverTimestamp()
         });
       });
       await writeBatch.commit();
@@ -597,7 +598,7 @@ interface WebhookLog {
 function createWebhookLog(webhookData: MapWebhook): WebhookLog {
   return {
     ...webhookData,
-    receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+    receivedAt: FieldValue.serverTimestamp(),
     actionedAt: null as admin.firestore.FieldValue | null,
   };
 }
@@ -755,9 +756,9 @@ export const adminRerunWebhooks = functions.https.onCall(async (data) => {
           
           // Update the webhook log to mark as actioned
           await doc.ref.update({
-            actionedAt: admin.firestore.FieldValue.serverTimestamp(),
-            rerunAt: admin.firestore.FieldValue.serverTimestamp(),
-            error: admin.firestore.FieldValue.delete()
+            actionedAt: FieldValue.serverTimestamp(),
+            rerunAt: FieldValue.serverTimestamp(),
+            error: FieldValue.delete()
           });
           
           processed++;
@@ -767,7 +768,7 @@ export const adminRerunWebhooks = functions.https.onCall(async (data) => {
           
           // Update with error info
           await doc.ref.update({
-            rerunAt: admin.firestore.FieldValue.serverTimestamp(),
+            rerunAt: FieldValue.serverTimestamp(),
             error: {
               message: error instanceof Error ? error.message : String(error),
               rerunError: true
@@ -971,7 +972,7 @@ export const mapWebhook = functions.https.onRequest(async (req: Request, res: Re
       }
       
       if (actionTaken) {
-        webhookLog.actionedAt = admin.firestore.FieldValue.serverTimestamp();
+        webhookLog.actionedAt = FieldValue.serverTimestamp();
         console.log(`[WEBHOOK:${requestId}] Action completed successfully`);
         
         // Regenerate JSON cache after successful update
@@ -1015,7 +1016,7 @@ export const mapWebhook = functions.https.onRequest(async (req: Request, res: Re
     try {
       const errorLog = {
         ...req.body,
-        receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        receivedAt: FieldValue.serverTimestamp(),
         actionedAt: null,
         error: {
           message: error instanceof Error ? error.message : String(error),
@@ -1249,9 +1250,21 @@ function beatdownsAreEqual(bd1: Beatdown, bd2: Beatdown): boolean {
  * Fetches all events and locations from API, compares with Firestore,
  * and only writes changes. Also cleans up deleted beatdowns.
  */
-async function syncAllBeatdowns(db: admin.firestore.Firestore): Promise<void> {
+interface SyncResult {
+  newBeatdowns: number;
+  updatedBeatdowns: number;
+  undeletedBeatdowns: number;
+  skippedUnchanged: number;
+  deletedBeatdowns: number;
+  dryRun: boolean;
+  durationMs: number;
+}
+
+// Exported so scripts/run-sync.js can call it directly against prod
+export async function syncAllBeatdowns(db: admin.firestore.Firestore, options?: { dryRun?: boolean }): Promise<SyncResult> {
+  const dryRun = options?.dryRun ?? false;
   const startTime = Date.now();
-  console.log(`[SYNC] Starting full beatdown sync`);
+  console.log(`[SYNC] Starting full beatdown sync${dryRun ? ' (DRY RUN — no writes)' : ''}`);
   
   try {
     // Fetch all existing beatdowns
@@ -1298,6 +1311,7 @@ async function syncAllBeatdowns(db: admin.firestore.Firestore): Promise<void> {
     const beatdownsToWrite: Beatdown[] = [];
     let newBeatdowns = 0;
     let updatedBeatdowns = 0;
+    let undeletedBeatdowns = 0;
     let skippedUnchanged = 0;
     const processedIds = new Set<string>();
 
@@ -1311,6 +1325,10 @@ async function syncAllBeatdowns(db: admin.firestore.Firestore): Promise<void> {
         // New beatdown
         beatdownsToWrite.push(beatdown);
         newBeatdowns++;
+      } else if (existingBeatdown.deleted) {
+        // Previously soft-deleted but reappeared in API - undelete it
+        beatdownsToWrite.push(beatdown);
+        undeletedBeatdowns++;
       } else if (!beatdownsAreEqual(existingBeatdown, beatdown)) {
         // Changed beatdown
         beatdownsToWrite.push(beatdown);
@@ -1325,59 +1343,92 @@ async function syncAllBeatdowns(db: admin.firestore.Firestore): Promise<void> {
       }
     }
 
-    console.log(`[SYNC] Found ${beatdownsToWrite.length} beatdowns to write (${newBeatdowns} new, ${updatedBeatdowns} updated, ${skippedUnchanged} unchanged)`);
+    console.log(`[SYNC] Found ${beatdownsToWrite.length} beatdowns to write (${newBeatdowns} new, ${updatedBeatdowns} updated, ${undeletedBeatdowns} undeleted, ${skippedUnchanged} unchanged)`);
 
     // Write beatdowns in batches
     if (beatdownsToWrite.length > 0) {
-      const beatdownBatches = chunkArray(beatdownsToWrite, BATCH_SIZE);
-      
-      for (const [batchIndex, beatdownBatch] of beatdownBatches.entries()) {
-        console.log(`[SYNC] Writing batch ${batchIndex + 1}/${beatdownBatches.length} (${beatdownBatch.length} beatdowns)`);
+      if (dryRun) {
+        console.log(`[SYNC] DRY RUN: Would write ${beatdownsToWrite.length} beatdowns (${newBeatdowns} new, ${updatedBeatdowns} updated, ${undeletedBeatdowns} undeleted)`);
+      } else {
+        const beatdownBatches = chunkArray(beatdownsToWrite, BATCH_SIZE);
         
-        const batch = db.batch();
-        for (const beatdown of beatdownBatch) {
-          const docId = generateBeatdownId(beatdown);
-          const docRef = db.collection('beatdowns').doc(docId);
-          batch.set(docRef, {
-            ...beatdown,
-            lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-          }, { merge: true });
+        for (const [batchIndex, beatdownBatch] of beatdownBatches.entries()) {
+          console.log(`[SYNC] Writing batch ${batchIndex + 1}/${beatdownBatches.length} (${beatdownBatch.length} beatdowns)`);
+          
+          const batch = db.batch();
+          for (const beatdown of beatdownBatch) {
+            const docId = generateBeatdownId(beatdown);
+            const docRef = db.collection('beatdowns').doc(docId);
+            batch.set(docRef, {
+              ...beatdown,
+              deleted: false,
+              deletedAt: FieldValue.delete(),
+              lastUpdated: FieldValue.serverTimestamp()
+            }, { merge: true });
+          }
+          await batch.commit();
         }
-        await batch.commit();
       }
     } else {
       console.log(`[SYNC] No beatdowns need to be written - all are up to date`);
     }
 
     // Cleanup: Soft delete beatdowns that no longer exist in API
+    // Skip beatdowns already marked as deleted to avoid wasteful writes
     console.log(`[SYNC] Cleaning up deleted beatdowns...`);
-    const docsToDelete = Array.from(existingBeatdowns.keys()).filter(id => !processedIds.has(id));
+    const docsToDelete = Array.from(existingBeatdowns.entries())
+      .filter(([id, bd]) => !processedIds.has(id) && !bd.deleted)
+      .map(([id]) => id);
     
-    if (docsToDelete.length > 0) {
-      console.log(`[SYNC] Found ${docsToDelete.length} beatdowns to soft delete`);
-      const deleteBatches = chunkArray(docsToDelete, BATCH_SIZE);
-      
-      for (const [deleteBatchIndex, deleteBatch] of deleteBatches.entries()) {
-        console.log(`[SYNC] Soft deleting batch ${deleteBatchIndex + 1}/${deleteBatches.length} (${deleteBatch.length} documents)`);
-        const batch = db.batch();
-        deleteBatch.forEach(docId => {
-          const docRef = db.collection('beatdowns').doc(docId);
-          batch.update(docRef, {
-            deleted: true,
-            deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-            lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    // Safety check: if we'd delete more than 50% of active beatdowns, the API
+    // likely returned incomplete data (outage, rate limit, pagination issue).
+    // Abort the deletion step to prevent mass false-deletions.
+    const activeExistingCount = Array.from(existingBeatdowns.values()).filter(b => !b.deleted).length;
+    const deletionRatio = activeExistingCount > 0 ? docsToDelete.length / activeExistingCount : 0;
+
+    let deletedCount = 0;
+    if (docsToDelete.length > 0 && deletionRatio > 0.5 && activeExistingCount > 100) {
+      console.error(`[SYNC] SAFETY CHECK: Would delete ${docsToDelete.length} of ${activeExistingCount} active beatdowns (${(deletionRatio * 100).toFixed(1)}% > 50%). Skipping deletion step — the API may have returned incomplete data.`);
+    } else if (docsToDelete.length > 0) {
+      deletedCount = docsToDelete.length;
+      if (dryRun) {
+        console.log(`[SYNC] DRY RUN: Would soft delete ${docsToDelete.length} beatdowns`);
+      } else {
+        console.log(`[SYNC] Found ${docsToDelete.length} beatdowns to soft delete`);
+        const deleteBatches = chunkArray(docsToDelete, BATCH_SIZE);
+        
+        for (const [deleteBatchIndex, deleteBatch] of deleteBatches.entries()) {
+          console.log(`[SYNC] Soft deleting batch ${deleteBatchIndex + 1}/${deleteBatches.length} (${deleteBatch.length} documents)`);
+          const batch = db.batch();
+          deleteBatch.forEach(docId => {
+            const docRef = db.collection('beatdowns').doc(docId);
+            batch.update(docRef, {
+              deleted: true,
+              deletedAt: FieldValue.serverTimestamp(),
+              lastUpdated: FieldValue.serverTimestamp()
+            });
           });
-        });
-        await batch.commit();
+          await batch.commit();
+        }
+        console.log(`[SYNC] Successfully soft deleted ${docsToDelete.length} beatdowns`);
       }
-      console.log(`[SYNC] Successfully soft deleted ${docsToDelete.length} beatdowns`);
     } else {
       console.log(`[SYNC] No beatdowns to delete - all existing beatdowns are still valid`);
     }
 
     const duration = Date.now() - startTime;
-    console.log(`[SYNC] Sync completed successfully in ${duration}ms`);
-    console.log(`[SYNC] Summary: ${newBeatdowns} new, ${updatedBeatdowns} updated, ${skippedUnchanged} unchanged, ${docsToDelete.length} deleted`);
+    console.log(`[SYNC] ${dryRun ? 'DRY RUN completed' : 'Sync completed successfully'} in ${duration}ms`);
+    console.log(`[SYNC] Summary: ${newBeatdowns} new, ${updatedBeatdowns} updated, ${undeletedBeatdowns} undeleted, ${skippedUnchanged} unchanged, ${deletedCount} deleted`);
+
+    return {
+      newBeatdowns,
+      updatedBeatdowns,
+      undeletedBeatdowns,
+      skippedUnchanged,
+      deletedBeatdowns: deletedCount,
+      dryRun,
+      durationMs: duration
+    };
 
   } catch (error) {
     const duration = Date.now() - startTime;
@@ -1408,22 +1459,26 @@ export const scheduledSyncAllBeatdowns = functions.pubsub
  * Callable function to manually trigger full sync
  */
 export const adminSyncAllBeatdowns = functions.https.onCall(async (data) => {
+  const dryRun = data?.dryRun === true;
   const startTime = Date.now();
-  console.log(`[ADMIN] Sync all beatdowns callable request`);
+  console.log(`[ADMIN] Sync all beatdowns callable request${dryRun ? ' (DRY RUN)' : ''}`);
   
   try {
     const db = admin.firestore();
-    await syncAllBeatdowns(db);
+    const result = await syncAllBeatdowns(db, { dryRun });
     
-    // Also regenerate JSON cache after sync
-    await generateJsonCache(db);
+    // Skip JSON cache regeneration on dry run
+    if (!dryRun) {
+      await generateJsonCache(db);
+    }
     
     const duration = Date.now() - startTime;
-    console.log(`[ADMIN] Successfully completed sync and JSON cache regeneration in ${duration}ms`);
+    console.log(`[ADMIN] Successfully completed ${dryRun ? 'dry run' : 'sync and JSON cache regeneration'} in ${duration}ms`);
     
     return {
-      message: 'Sync completed successfully',
-      duration
+      message: dryRun ? 'Dry run completed — no changes written' : 'Sync completed successfully',
+      duration,
+      ...result
     };
     
   } catch (error) {
@@ -1436,3 +1491,43 @@ export const adminSyncAllBeatdowns = functions.https.onCall(async (data) => {
     throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Failed to sync beatdowns');
   }
 });
+
+/**
+ * Local-only HTTP triggers for invoking scheduled functions during development.
+ * These endpoints only exist when running in the Firebase Emulator.
+ * Trigger via: curl http://localhost:5001/f3-workout/us-central1/localTriggerSync
+ */
+if (process.env.FUNCTIONS_EMULATOR === 'true') {
+  exports.localTriggerSync = functions.https.onRequest(async (req: Request, res: Response) => {
+    const dryRun = req.query.dryRun === 'true';
+    console.log(`[LOCAL] Triggering syncAllBeatdowns${dryRun ? ' (DRY RUN)' : ''}`);
+    try {
+      const db = admin.firestore();
+      const result = await syncAllBeatdowns(db, { dryRun });
+      // JSON cache writes to Cloud Storage which is not emulated locally - best-effort only
+      if (!dryRun) {
+        try {
+          await generateJsonCache(db);
+        } catch (cacheError) {
+          console.warn(`[LOCAL] JSON cache generation failed (expected without Storage emulator):`, cacheError);
+        }
+      }
+      res.status(200).json({ message: dryRun ? 'Dry run completed' : 'Sync completed', ...result });
+    } catch (error) {
+      console.error(`[LOCAL] Error:`, error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  exports.localTriggerJsonCache = functions.https.onRequest(async (req: Request, res: Response) => {
+    console.log(`[LOCAL] Triggering generateJsonCache`);
+    try {
+      const db = admin.firestore();
+      await generateJsonCache(db);
+      res.status(200).json({ message: 'JSON cache generation completed' });
+    } catch (error) {
+      console.error(`[LOCAL] Error:`, error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}

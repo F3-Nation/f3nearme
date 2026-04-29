@@ -23,7 +23,6 @@ npm-debug.log*
 /.sass-cache
 /.sourcemaps
 /.versions
-/.vscode
 /coverage
 /dist
 /node_modules
@@ -31,6 +30,10 @@ npm-debug.log*
 /plugins
 /www
 *.cache
-functions/scripts/service-account.json
-functions/scripts/.env
+functions/service-account.json
+functions/.env
+functions/.runtimeconfig.json
 .env
+
+# Firebase emulator data
+emulator-data/

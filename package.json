@@ -11,7 +11,14 @@
     "lint": "ng lint",
     "e2e": "ng e2e",
     "build:prod": "ionic build --prod --release",
-    "deploy": "npm run build:prod && firebase deploy --only hosting"
+    "deploy": "npm run build:prod && firebase deploy --only hosting",
+    "emulator": "npm --prefix functions run emulator",
+    "emulator:debug": "npm --prefix functions run emulator:debug",
+    "emulator:empty": "npm --prefix functions run emulator:empty",
+    "emulator:seed": "node scripts/start-and-seed.js",
+    "export-prod-data": "node scripts/export-prod-data.js",
+    "sync:dry": "npm --prefix functions run build && node scripts/run-sync.js",
+    "sync:live": "npm --prefix functions run build && node scripts/run-sync.js --live"
   },
   "private": true,
   "dependencies": {
@@ -50,6 +57,7 @@
     "eslint-plugin-import": "2.22.1",
     "eslint-plugin-jsdoc": "30.7.6",
     "eslint-plugin-prefer-arrow": "1.2.2",
+    "firebase-tools": "^11.30.0",
     "jasmine-core": "~3.8.0",
     "jasmine-spec-reporter": "~5.0.0",
     "karma": "~6.3.2",

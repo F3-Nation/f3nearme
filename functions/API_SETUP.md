@@ -1,76 +1,42 @@
 # F3 API Configuration
 
-This document describes how to configure the F3 Nation API credentials for Cloud Functions and sync scripts.
+This document describes how to configure the F3 Nation API credentials for Cloud Functions.
 
-## Cloud Functions Configuration
+## Production (Deployed Functions)
 
-For Firebase Cloud Functions, API credentials are stored in Firebase Functions config.
-
-### Setting API Credentials
-
-Run the following commands to set the API credentials (replace with your actual API key):
+API credentials are stored in Firebase Functions config:
 
 ```bash
+# Set credentials
 firebase functions:config:set f3.api_key="YOUR_API_KEY_HERE"
 firebase functions:config:set f3.client="f3nearme"
-```
 
-### Viewing Current Config
-
-To view the current configuration:
-
-```bash
+# View current config
 firebase functions:config:get
 ```
 
-### Using in Code
+The Cloud Functions code reads `functions.config().f3.api_key` at runtime.
 
-The Cloud Functions code automatically reads from `functions.config().f3.api_key` and `functions.config().f3.client`. If not set, it falls back to environment variables or default values.
+## Local Development (Emulator)
 
-## Sync Script Configuration
-
-For the sync script (`functions/scripts/sync-beatdowns.ts`), API credentials can be set via environment variables.
-
-### Option 1: Environment Variables
-
-Set environment variables before running the script:
+For local development, API credentials are set via environment variables in `functions/.env`:
 
 ```bash
-export F3_API_KEY="YOUR_API_KEY_HERE"
-export F3_CLIENT="f3nearme"
-npm start
+cp functions/.env.example functions/.env
+# Edit functions/.env and set your F3_API_KEY
 ```
 
-### Option 2: .env File (Recommended)
+The code checks `process.env.F3_API_KEY` first, then falls back to `functions.config()`.
 
-Create a `.env` file in the `functions/scripts` directory:
-
-```bash
-cd functions/scripts
-cat > .env << EOF
-F3_API_KEY=YOUR_API_KEY_HERE
-F3_CLIENT=f3nearme
-EOF
-```
-
-Then use a package like `dotenv` to load it (requires adding `dotenv` to dependencies):
-
-```typescript
-import * as dotenv from 'dotenv';
-dotenv.config();
-```
-
-### Option 3: Default Values
-
-If no environment variables are set, the script uses hardcoded default values. This is fine for development but not recommended for production.
+A `.runtimeconfig.json` file in `functions/` provides `functions.config()` values to the emulator.
 
 ## Getting Your API Key
 
-Contact the F3 Nation API administrator to obtain your API key. The API key should be kept secure and never committed to version control.
+Contact the F3 Nation API administrator to obtain your API key.
 
 ## Security Notes
 
 - Never commit API keys to version control
-- The `.env` file should be in `.gitignore` (already configured)
-- For production, use Firebase Functions config or secure environment variable management
-- Rotate API keys regularly and update all configurations
+- `functions/.env`, `functions/.runtimeconfig.json`, and `functions/service-account.json` are all gitignored
+- For production, use Firebase Functions config (`firebase functions:config:set`)
+- The `process.env.F3_API_KEY` variable is only used locally and is not pushed to Firebase/GCP
