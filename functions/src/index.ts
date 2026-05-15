@@ -315,6 +315,8 @@ async function updateBeatdown(db: admin.firestore.Firestore, beatdown: Beatdown,
       .doc(docId)
       .set({
         ...beatdown,
+        deleted: false,
+        deletedAt: FieldValue.delete(),
         lastUpdated: FieldValue.serverTimestamp()
       }, { merge: true });
 }
@@ -387,6 +389,8 @@ async function updateLocationBeatdowns(db: admin.firestore.Firestore, locationId
         const docRef = db.collection('beatdowns').doc(docId);
         writeBatch.set(docRef, {
           ...beatdown,
+          deleted: false,
+          deletedAt: FieldValue.delete(),
           lastUpdated: FieldValue.serverTimestamp()
         }, { merge: true });
       }
