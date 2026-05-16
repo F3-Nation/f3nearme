@@ -52,8 +52,10 @@ npm install  # installs repo-local dev tools, including firebase-tools
 cd functions && npm install && cd ..
 
 # Configure local environment for Cloud Functions
-cp functions/.env.example functions/.env
-# Edit functions/.env and set your F3_API_KEY
+# Use .env.local for local-only vars (GOOGLE_APPLICATION_CREDENTIALS, test API keys)
+# .env.local is NOT deployed to production; .env IS deployed
+cp functions/.env.example functions/.env.local
+# Edit functions/.env.local and set F3_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc.
 
 # Place your Firebase service account key
 # Download from: Firebase Console > Project Settings > Service Accounts > Generate new private key
@@ -204,24 +206,32 @@ You can also trigger syncs from the **admin page** (`/admin`) in the deployed ap
 
 ## Deployment
 
+The Firebase CLI is not installed globally — use `npx firebase-tools@latest` or install it first:
+
 ```bash
-# Deploy everything (hosting + functions)
-npm run build:prod && firebase deploy
-
-# Deploy only functions
-cd functions && npm run deploy
-
-# Deploy only hosting
-npm run deploy
+npm install -g firebase-tools
 ```
+
+```bash
+# Deploy only functions (most common)
+npx firebase-tools@latest deploy --only functions
+
+# Deploy everything (hosting + functions)
+npm run build:prod && npx firebase-tools@latest deploy
+
+# Deploy only hosting (also triggered automatically on push to main via GitHub Actions)
+npm run build:prod && npx firebase-tools@latest deploy --only hosting
+```
+
+> **Note:** Hosting is also auto-deployed via GitHub Actions on any push to `main` that changes files under `src/`. Functions must be deployed manually.
 
 ### Functions configuration (production)
 
 API credentials are set via Firebase Functions config (not committed to repo):
 
 ```bash
-firebase functions:config:set f3.api_key="YOUR_API_KEY"
-firebase functions:config:set f3.client="f3nearme"
+npx firebase-tools@latest functions:config:set f3.api_key="YOUR_API_KEY"
+npx firebase-tools@latest functions:config:set f3.client="f3nearme"
 ```
 
 ## Project Structure
@@ -230,8 +240,9 @@ firebase functions:config:set f3.client="f3nearme"
 ├── functions/              # Firebase Cloud Functions
 │   ├── src/
 │   │   └── index.ts        # All function definitions + sync logic
-│   ├── .env                # Local env vars (gitignored)
-│   ├── .env.example         # Template for .env
+│   ├── .env                # Env vars deployed to production Cloud Functions (gitignored)
+│   ├── .env.local          # Local-only overrides — NOT deployed (gitignored)
+│   ├── .env.example         # Template for .env / .env.local
 │   ├── .runtimeconfig.json  # Emulator functions.config() (gitignored)
 │   ├── service-account.json # Firebase Admin credentials (gitignored)
 │   ├── package.json
