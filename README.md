@@ -39,7 +39,8 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 ## Prerequisites
 
 - **Node.js 20.x** (`node -v` to verify)
-- **Java 17+** (required by Firebase emulators — `sudo apt install openjdk-17-jre-headless`)
+- **Java 11+** (required by Firebase emulators — `sudo apt install openjdk-21-jre-headless`)
+- **Firebase CLI** (`npm install -g firebase-tools`) — must be on PATH; the emulator scripts call `firebase` directly
 - **Ionic CLI** (`npm install -g @ionic/cli`)
 - **Firebase service account** — place at `functions/service-account.json` (gitignored)
 
@@ -48,21 +49,30 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 ```bash
 # Clone and install
 git clone <repo-url> && cd f3nearme
-npm install  # installs repo-local dev tools, including firebase-tools
-cd functions && npm install && cd ..
+npm install
+cd functions && npm install && cd ..  # functions has its own node_modules
 
 # Configure local environment for Cloud Functions
-# Use .env.local for local-only vars (GOOGLE_APPLICATION_CREDENTIALS, test API keys)
-# .env.local is NOT deployed to production; .env IS deployed
-cp functions/.env.example functions/.env.local
-# Edit functions/.env.local and set F3_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc.
+cp functions/.env.example functions/.env
+# Edit functions/.env and fill in F3_API_KEY and other values.
+# Note: .env IS deployed to production — do not put secrets you want local-only here.
+# Use .env.local for local-only overrides (it is NOT deployed).
+
+# Create .runtimeconfig.json so functions.config() works in local scripts (sync, emulator)
+# This is separate from .env — Firebase's functions.config() reads from this file locally.
+cat > functions/.runtimeconfig.json << 'EOF'
+{
+  "f3": {
+    "api_key": "YOUR_ACTUAL_API_KEY",
+    "client": "f3nearme"
+  }
+}
+EOF
 
 # Place your Firebase service account key
 # Download from: Firebase Console > Project Settings > Service Accounts > Generate new private key
 cp /path/to/your/service-account.json functions/service-account.json
 ```
-
-The Firebase CLI is installed locally from the root `package.json`, so commands like `npm run emulator` work without a global `firebase` install.
 
 ## Local Development
 
@@ -206,21 +216,15 @@ You can also trigger syncs from the **admin page** (`/admin`) in the deployed ap
 
 ## Deployment
 
-The Firebase CLI is not installed globally — use `npx firebase-tools@latest` or install it first:
-
-```bash
-npm install -g firebase-tools
-```
-
 ```bash
 # Deploy only functions (most common)
-npx firebase-tools@latest deploy --only functions
+firebase deploy --only functions
 
 # Deploy everything (hosting + functions)
-npm run build:prod && npx firebase-tools@latest deploy
+npm run build:prod && firebase deploy
 
 # Deploy only hosting (also triggered automatically on push to main via GitHub Actions)
-npm run build:prod && npx firebase-tools@latest deploy --only hosting
+npm run build:prod && firebase deploy --only hosting
 ```
 
 > **Note:** Hosting is also auto-deployed via GitHub Actions on any push to `main` that changes files under `src/`. Functions must be deployed manually.
@@ -230,8 +234,8 @@ npm run build:prod && npx firebase-tools@latest deploy --only hosting
 API credentials are set via Firebase Functions config (not committed to repo):
 
 ```bash
-npx firebase-tools@latest functions:config:set f3.api_key="YOUR_API_KEY"
-npx firebase-tools@latest functions:config:set f3.client="f3nearme"
+firebase functions:config:set f3.api_key="YOUR_API_KEY"
+firebase functions:config:set f3.client="f3nearme"
 ```
 
 ## Project Structure

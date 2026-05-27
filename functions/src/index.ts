@@ -363,9 +363,11 @@ async function updateLocationBeatdowns(db: admin.firestore.Firestore, locationId
       existingDocs.set(doc.id, doc);
     });
 
-    // Events from the list endpoint now include eventTypes, so no need to fetch individually
-    console.log(`[DB] Processing ${events.length} events from API for locationId: ${locationId}`);
-    const beatdownsToSave: { docId: string, beatdown: Beatdown }[] = events.map((event: ApiEvent) => {
+    // Events from the list endpoint now include eventTypes, so no need to fetch individually.
+    // Filter out private events — they should not appear in Near Me.
+    const publicEvents = events.filter((e: ApiEvent) => !e.isPrivate);
+    console.log(`[DB] Processing ${publicEvents.length} public events from API for locationId: ${locationId} (filtered ${events.length - publicEvents.length} private)`);
+    const beatdownsToSave: { docId: string, beatdown: Beatdown }[] = publicEvents.map((event: ApiEvent) => {
       const beatdown = transformToBeatdown(location, event);
       const docId = generateBeatdownId(beatdown);
       console.log(`[DB] Transformed event ${event.id} ("${event.name}") to beatdown with docId: ${docId}`);
@@ -441,43 +443,58 @@ async function updateEventBeatdown(db: admin.firestore.Firestore, eventId: numbe
   console.log(`[DB] Starting updateEventBeatdown for eventId: ${eventId}`);
   
   try {
-    // First find the existing beatdown to get its locationId
-    console.log(`[DB] Querying existing beatdown for eventId: ${eventId}`);
-    const snapshot = await db.collection('beatdowns')
-      .where('eventId', '==', eventId)
-      .limit(1)
-      .get();
-
-    if (snapshot.empty) {
-      console.log(`[DB] No existing beatdown found for eventId: ${eventId}`);
-      return;
+    // Fetch the event first so we can check isPrivate and isActive before deciding what to do.
+    // This also handles the case where a private event is made public (no existing beatdown yet).
+    let event: ApiEvent | null = null;
+    try {
+      event = await fetchEventData(eventId);
+    } catch (fetchError) {
+      console.log(`[DB] Could not fetch event ${eventId} (may be deleted): ${fetchError}`);
     }
 
-    const existingBeatdown = snapshot.docs[0].data() as Beatdown;
-    console.log(`[DB] Found existing beatdown for eventId ${eventId}: locationId=${existingBeatdown.locationId}, docId=${snapshot.docs[0].id}`);
-    
-    // Fetch the event details (eventTypes are now included in individual event fetch)
-    const event = await fetchEventData(eventId);
-    
-    // Fetch location details
-    const { location } = await fetchLocationData(existingBeatdown.locationId);
-    
-    if (!location) {
-      console.error(`[DB] No location data returned for locationId ${existingBeatdown.locationId} when updating eventId ${eventId}`);
-      return;
-    }
+    if (event && event.isActive && !event.isPrivate) {
+      // Event is active and public — create or update its beatdown.
+      console.log(`[DB] Event ${eventId} ("${event.name}") is active and public, upserting beatdown`);
 
-    if (event && event.isActive) {
-      console.log(`[DB] Found active event ${eventId} ("${event.name}"), updating beatdown`);
+      // Look up any existing beatdown so updateBeatdown can handle doc-ID changes.
+      const snapshot = await db.collection('beatdowns')
+        .where('eventId', '==', eventId)
+        .limit(1)
+        .get();
+
+      const { location } = await fetchLocationData(event.locationId);
+      if (!location) {
+        console.error(`[DB] No location data returned for locationId ${event.locationId} when updating eventId ${eventId}`);
+        return;
+      }
+
       const beatdown = transformToBeatdown(location, event);
-      await updateBeatdown(db, beatdown, existingBeatdown);
+
+      if (snapshot.empty) {
+        // Brand-new public event (or previously private, now public) — create beatdown.
+        const docId = generateBeatdownId(beatdown);
+        await db.collection('beatdowns').doc(docId).set({
+          ...beatdown,
+          deleted: false,
+          deletedAt: FieldValue.delete(),
+          lastUpdated: FieldValue.serverTimestamp()
+        }, { merge: true });
+        console.log(`[DB] Created new beatdown for eventId ${eventId} with docId: ${docId}`);
+      } else {
+        const existingBeatdown = snapshot.docs[0].data() as Beatdown;
+        console.log(`[DB] Found existing beatdown for eventId ${eventId}: docId=${snapshot.docs[0].id}`);
+        await updateBeatdown(db, beatdown, existingBeatdown);
+      }
+
       const duration = Date.now() - startTime;
-      console.log(`[DB] Successfully updated beatdown for eventId ${eventId} in ${duration}ms`);
+      console.log(`[DB] Successfully upserted beatdown for eventId ${eventId} in ${duration}ms`);
     } else {
-      console.log(`[DB] Event ${eventId} no longer exists or is inactive, deleting beatdown`);
+      // Event is inactive, private, or not found — soft delete any existing beatdown.
+      const reason = !event ? 'not found' : !event.isActive ? 'inactive' : 'private';
+      console.log(`[DB] Event ${eventId} is ${reason}, soft deleting any existing beatdown`);
       await deleteBeatdownsByEvent(db, eventId);
       const duration = Date.now() - startTime;
-      console.log(`[DB] Successfully deleted beatdown for eventId ${eventId} in ${duration}ms`);
+      console.log(`[DB] Successfully handled ${reason} event ${eventId} in ${duration}ms`);
     }
   } catch (error) {
     const duration = Date.now() - startTime;
@@ -1297,10 +1314,16 @@ export async function syncAllBeatdowns(db: admin.firestore.Firestore, options?: 
     }
     console.log(`[SYNC] Fetched ${locationMap.size} locations from API`);
 
-    // Transform events to beatdowns
+    // Transform events to beatdowns, skipping private events.
+    // Private events are tracked in Slack but must not appear in Near Me or Maps.
     console.log(`[SYNC] Transforming events to beatdowns...`);
     const beatdowns: Beatdown[] = [];
+    let privateSkipped = 0;
     for (const event of events) {
+      if (event.isPrivate) {
+        privateSkipped++;
+        continue;
+      }
       const location = locationMap.get(event.locationId);
       if (location) {
         beatdowns.push(transformToBeatdown(location, event));
@@ -1308,7 +1331,7 @@ export async function syncAllBeatdowns(db: admin.firestore.Firestore, options?: 
         console.warn(`[SYNC] Location ${event.locationId} not found for event ${event.id}`);
       }
     }
-    console.log(`[SYNC] Transformed ${beatdowns.length} beatdowns`);
+    console.log(`[SYNC] Transformed ${beatdowns.length} beatdowns (skipped ${privateSkipped} private events)`);
 
     // Compare beatdowns and find changes
     console.log(`[SYNC] Comparing beatdowns with existing data...`);
