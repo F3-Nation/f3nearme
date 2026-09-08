@@ -127,14 +127,16 @@ const DATA_PREFIX = 'data';
 
 // API Configuration
 const API_BASE_URL = 'https://api.f3nation.com';
-// Get API key from environment config - REQUIRED, no default
-// firebase functions:config:set f3.api_key="YOURAPIKEY"
-// firebase functions:config:set f3.client="f3nearme"
-const API_KEY = functions.config().f3?.api_key;
-const CLIENT_HEADER = functions.config().f3?.client || 'f3nearme';
+// Get API key from environment - REQUIRED, no default.
+// Set in functions/.env (gitignored): F3_API_KEY=... / F3_CLIENT=f3nearme
+// (functions.config() was shut down by Firebase and returns empty for new deploys)
+const API_KEY = process.env.F3_API_KEY;
+const CLIENT_HEADER = process.env.F3_CLIENT || 'f3nearme';
 
 if (!API_KEY) {
-  throw new Error('F3_API_KEY must be set via Firebase Functions config or environment variable');
+  // Don't throw here: deploy-time function discovery loads this module without
+  // env vars. At runtime the values from functions/.env are always present.
+  console.warn('[CONFIG] F3_API_KEY is not set — F3 Nation API calls will fail');
 }
 
 const API_HEADERS = {
@@ -999,7 +1001,7 @@ export const mapWebhook = functions.https.onRequest(async (req: Request, res: Re
         // Regenerate JSON cache after successful update
         console.log(`[WEBHOOK:${requestId}] Triggering JSON cache regeneration`);
         try {
-          await generateJsonCache(db);
+          await generateJsonCache();
           console.log(`[WEBHOOK:${requestId}] JSON cache regenerated successfully`);
         } catch (jsonError) {
           console.error(`[WEBHOOK:${requestId}] Error regenerating JSON cache:`, jsonError);
@@ -1062,63 +1064,95 @@ export const mapWebhook = functions.https.onRequest(async (req: Request, res: Re
 });
 
 /**
- * Generate JSON cache file from Firestore and upload to Cloud Storage
- * Creates: /data/all.json - all active beatdowns
+ * Fetch all active, public beatdowns directly from the F3 Nation API.
+ * This is the source of truth for the JSON cache — Firestore is only
+ * maintained for legacy clients during the migration window.
  */
-async function generateJsonCache(db: admin.firestore.Firestore): Promise<void> {
+async function fetchAllBeatdownsFromApi(): Promise<Array<Beatdown & { id: string }>> {
+  const eventsResponse = await fetchWithRetry(`${API_BASE_URL}/v1/event?pageSize=100000`) as EventsResponse;
+  const events = eventsResponse.events;
+  console.log(`[JSON] Fetched ${events.length} events from API`);
+
+  const locationsResponse = await fetchWithRetry(`${API_BASE_URL}/v1/location`) as LocationsResponse;
+  const locationMap = new Map<number, ApiLocation>();
+  for (const location of locationsResponse.locations) {
+    locationMap.set(location.id, location);
+  }
+  console.log(`[JSON] Fetched ${locationMap.size} locations from API`);
+
+  const beatdowns: Array<Beatdown & { id: string }> = [];
+  let privateSkipped = 0;
+  let missingLocation = 0;
+  for (const event of events) {
+    // Private events are tracked in Slack but must not appear in Near Me
+    if (event.isPrivate) {
+      privateSkipped++;
+      continue;
+    }
+    const location = locationMap.get(event.locationId);
+    if (!location) {
+      missingLocation++;
+      continue;
+    }
+    const beatdown = transformToBeatdown(location, event);
+    beatdowns.push({ ...beatdown, id: generateBeatdownId(beatdown) });
+  }
+
+  // Stable ordering keeps the file diffable between generations
+  beatdowns.sort((a, b) => a.id.localeCompare(b.id));
+  console.log(`[JSON] Built ${beatdowns.length} beatdowns from API (skipped ${privateSkipped} private, ${missingLocation} without location)`);
+  return beatdowns;
+}
+
+/**
+ * Generate JSON cache file from the F3 Nation API and upload to Cloud Storage
+ * Creates: /data/all.json - all active beatdowns (minified, stored gzipped)
+ */
+async function generateJsonCache(): Promise<void> {
   const startTime = Date.now();
   console.log(`[JSON] Starting JSON cache generation`);
-  
+
   try {
-    // Get all beatdowns from Firestore (we'll filter deleted in memory)
-    // Note: We can't use .where('deleted', '==', false) because it excludes
-    // documents where the 'deleted' field doesn't exist
-    const snapshot = await db.collection('beatdowns').get();
-    
-    console.log(`[JSON] Found ${snapshot.docs.length} total beatdowns in Firestore`);
-    
-    // Transform to beatdown objects, filter out deleted, and serialize timestamps
-    const beatdowns: Array<Beatdown & { id: string }> = snapshot.docs
-      .map(doc => {
-        const data = doc.data() as Beatdown;
-        return { ...data, id: doc.id };
-      })
-      .filter(bd => !bd.deleted) // Filter out deleted beatdowns (same as app does)
-      .map(bd => {
-        // Convert Firestore Timestamps to ISO strings for JSON serialization
-        const serialized: any = { ...bd };
-        if (serialized.lastUpdated && serialized.lastUpdated.toDate) {
-          serialized.lastUpdated = serialized.lastUpdated.toDate().toISOString();
-        } else if (serialized.lastUpdated instanceof Date) {
-          serialized.lastUpdated = serialized.lastUpdated.toISOString();
-        }
-        if (serialized.deletedAt && serialized.deletedAt.toDate) {
-          serialized.deletedAt = serialized.deletedAt.toDate().toISOString();
-        } else if (serialized.deletedAt instanceof Date) {
-          serialized.deletedAt = serialized.deletedAt.toISOString();
-        }
-        return serialized;
-      });
-    
-    console.log(`[JSON] Filtered to ${beatdowns.length} active beatdowns (excluded ${snapshot.docs.length - beatdowns.length} deleted)`);
-    
+    const beatdowns = await fetchAllBeatdownsFromApi();
+
     const bucket = storage.bucket(BUCKET_NAME);
-    
-    // Generate all.json - all beatdowns
-    const allJson = JSON.stringify(beatdowns, null, 2);
     const allFile = bucket.file(`${DATA_PREFIX}/all.json`);
+
+    // Safety check: if the API returned drastically fewer beatdowns than the
+    // previous generation (outage, rate limit, partial response), keep the
+    // existing file rather than publishing a gutted dataset.
+    try {
+      const [meta] = await allFile.getMetadata();
+      const prevCount = Number((meta?.metadata as any)?.beatdownCount);
+      if (prevCount > 100 && beatdowns.length < prevCount * 0.5) {
+        throw new Error(`SAFETY CHECK: new count ${beatdowns.length} < 50% of previous ${prevCount}; aborting cache write`);
+      }
+    } catch (metaError: any) {
+      if (String(metaError?.message).startsWith('SAFETY CHECK')) {
+        throw metaError;
+      }
+      // No previous file/metadata — first generation, nothing to compare
+      console.log(`[JSON] No previous cache metadata to compare; continuing`);
+    }
+
+    const allJson = JSON.stringify(beatdowns);
     await allFile.save(allJson, {
       contentType: 'application/json',
+      gzip: true, // stored and served compressed (~10x smaller on the wire)
       metadata: {
         cacheControl: 'public, max-age=3600', // Cache for 1 hour
+        metadata: {
+          beatdownCount: String(beatdowns.length),
+          generatedAt: new Date().toISOString(),
+        },
       },
     });
     await allFile.makePublic();
-    console.log(`[JSON] Uploaded all.json (${beatdowns.length} beatdowns)`);
-    
+    console.log(`[JSON] Uploaded all.json (${beatdowns.length} beatdowns, ${allJson.length} bytes raw)`);
+
     const duration = Date.now() - startTime;
     console.log(`[JSON] Successfully generated JSON cache in ${duration}ms`);
-    
+
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[JSON] Error generating JSON cache after ${duration}ms:`, error);
@@ -1134,9 +1168,8 @@ export const adminRegenerateJsonCache = functions.https.onCall(async (data) => {
   console.log(`[ADMIN] Regenerate JSON cache callable request`);
   
   try {
-    const db = admin.firestore();
-    await generateJsonCache(db);
-    
+    await generateJsonCache();
+
     const duration = Date.now() - startTime;
     console.log(`[ADMIN] Successfully regenerated JSON cache in ${duration}ms`);
     
@@ -1155,19 +1188,6 @@ export const adminRegenerateJsonCache = functions.https.onCall(async (data) => {
     throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Failed to regenerate JSON cache');
   }
 });
-
-/**
- * Scheduled function to regenerate JSON cache hourly
- */
-export const scheduledRegenerateJsonCache = functions.pubsub
-  .schedule('every 1 hours')
-  .timeZone('UTC')
-  .onRun(async (context) => {
-    console.log(`[SCHEDULED] Starting scheduled JSON cache regeneration`);
-    const db = admin.firestore();
-    await generateJsonCache(db);
-    console.log(`[SCHEDULED] Completed scheduled JSON cache regeneration`);
-  });
 
 /**
  * Helper function to delay execution
@@ -1478,7 +1498,7 @@ export const scheduledSyncAllBeatdowns = functions.pubsub
     
     // Also regenerate JSON cache after sync
     console.log(`[SCHEDULED] Regenerating JSON cache after sync`);
-    await generateJsonCache(db);
+    await generateJsonCache();
     console.log(`[SCHEDULED] Completed JSON cache regeneration`);
   });
 
@@ -1496,7 +1516,7 @@ export const adminSyncAllBeatdowns = functions.https.onCall(async (data) => {
     
     // Skip JSON cache regeneration on dry run
     if (!dryRun) {
-      await generateJsonCache(db);
+      await generateJsonCache();
     }
     
     const duration = Date.now() - startTime;
@@ -1534,7 +1554,7 @@ if (process.env.FUNCTIONS_EMULATOR === 'true') {
       // JSON cache writes to Cloud Storage which is not emulated locally - best-effort only
       if (!dryRun) {
         try {
-          await generateJsonCache(db);
+          await generateJsonCache();
         } catch (cacheError) {
           console.warn(`[LOCAL] JSON cache generation failed (expected without Storage emulator):`, cacheError);
         }
@@ -1549,8 +1569,7 @@ if (process.env.FUNCTIONS_EMULATOR === 'true') {
   exports.localTriggerJsonCache = functions.https.onRequest(async (req: Request, res: Response) => {
     console.log(`[LOCAL] Triggering generateJsonCache`);
     try {
-      const db = admin.firestore();
-      await generateJsonCache(db);
+      await generateJsonCache();
       res.status(200).json({ message: 'JSON cache generation completed' });
     } catch (error) {
       console.error(`[LOCAL] Error:`, error);
