@@ -15,8 +15,8 @@ via a Firestore listener.
 - `all.json` is now generated **directly from the F3 Nation API**
   (`/v1/event` + `/v1/location`) by `generateJsonCache()` in
   `functions/src/index.ts` — minified, stored gzipped (~486KB on the wire),
-  `Cache-Control: public, max-age=3600`, with a safety check that refuses to
-  overwrite the file if the new dataset shrinks >50%.
+  `Cache-Control: public, max-age=300, stale-while-revalidate=3600`, with a
+  safety check that refuses to overwrite the file if the new dataset shrinks >50%.
 - Triggers: hourly `scheduledSyncAllBeatdowns`, the `mapWebhook` on changes,
   and the `adminRegenerateJsonCache` callable.
 - The client (`beatdown.service.ts`) has `useJsonCache = true` and serves all

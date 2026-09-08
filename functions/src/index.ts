@@ -1140,7 +1140,10 @@ async function generateJsonCache(): Promise<void> {
       contentType: 'application/json',
       gzip: true, // stored and served compressed (~10x smaller on the wire)
       metadata: {
-        cacheControl: 'public, max-age=3600', // Cache for 1 hour
+        // Short TTL so edits show up fast; stale-while-revalidate lets
+        // browsers render the cached copy instantly while refreshing behind
+        // the scenes. Revalidations are 304s — near-zero cost.
+        cacheControl: 'public, max-age=300, stale-while-revalidate=3600',
         metadata: {
           beatdownCount: String(beatdowns.length),
           generatedAt: new Date().toISOString(),
