@@ -26,12 +26,24 @@ via a Firestore listener.
 - Firestore writes still happen during the hourly sync **only as a bridge** for
   stale PWA bundles that predate this deploy.
 
-## Phase 2 — after ~2026-09-15
+## Phase 2 — rules lockdown (DONE 2026-09-08)
 
-1. Replace `firestore.rules` with `firestore.rules.phase2-locked` and
-   `firebase deploy --only firestore:rules`. This cuts off the scraper.
-   Verify reads drop: Cloud Monitoring → `firestore.googleapis.com/document/read_count`.
-2. Optional decommission (removes the rest of the Firestore machinery):
+Deny-all rules deployed the same evening. Firestore Data Access audit logs
+(enabled 21:09 UTC) identified the excess readers: four automated clients
+running copies of the old app code — Phoenix AZ (full-collection dump every
+26s, ~60% of the excess), Logan UT, Bothell WA, Charlotte NC (~2min cadence
+each) — active 24/7 since Sep 1. Real users showed ordinary browsing patterns
+and were unaffected beyond one degraded visit on stale PWA bundles.
+
+Follow-ups:
+- Watch `firestore.googleapis.com/document/read_count` drop to ~0.
+- Consider disabling the DATA_READ audit logging after things settle
+  (IAM policy backup from before the change is in the incident notes).
+- If a region asks why their dashboard broke, point them to the public JSON:
+  `https://storage.googleapis.com/f3-workout.appspot.com/data/all.json`.
+
+## Phase 3 — optional decommission (removes the rest of the Firestore machinery)
+
    - Delete `syncAllBeatdowns` + Firestore reads/writes from
      `functions/src/index.ts`; keep only JSON generation. The webhook handler
      can drop its Firestore updates and just call `generateJsonCache()`.
