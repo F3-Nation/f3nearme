@@ -1,0 +1,90 @@
+# Deploys Cloud Functions when their source changes (hosting has its own
+# auto-generated workflow, firebase-hosting-merge.yml). Modeled on the
+# Dionysus deploy-functions workflow, minus the affected-function narrowing —
+# this codebase is one index.ts, so we always deploy everything.
+#
+# Required repo secrets:
+#   FIREBASE_SERVICE_ACCOUNT_F3_WORKOUT — service account JSON (shared with
+#     the hosting workflow). NOTE: the hosting-only SA that `firebase init
+#     hosting:github` created may lack functions permissions; if the deploy
+#     fails on IAM, grant it roles/cloudfunctions.developer +
+#     roles/iam.serviceAccountUser (or Editor) in the f3-workout project.
+#   FUNCTIONS_ENV_FILE — the full contents of functions/.env (F3_API_KEY,
+#     F3_CLIENT). The file is gitignored but IS deployed with the functions
+#     bundle, so CI has to recreate it before deploying:
+#       gh secret set FUNCTIONS_ENV_FILE < functions/.env
+name: Deploy functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'functions/**'
+      - 'firebase.json'
+      - '.github/workflows/deploy-functions.yml'
+
+concurrency:
+  group: deploy-functions
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20 # matches functions/package.json engines
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      # Fail fast with a clear message rather than deploying functions with
+      # an empty .env (which would break every F3 API call in production).
+      - name: Check required secrets
+        env:
+          ENV_FILE: ${{ secrets.FUNCTIONS_ENV_FILE }}
+          KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_F3_WORKOUT }}
+        run: |
+          if [ -z "$ENV_FILE" ]; then
+            echo "::error::FUNCTIONS_ENV_FILE secret is not set. Run: gh secret set FUNCTIONS_ENV_FILE < functions/.env"
+            exit 1
+          fi
+          if ! printf '%s' "$ENV_FILE" | grep -q '^F3_API_KEY='; then
+            echo "::error::FUNCTIONS_ENV_FILE secret does not contain F3_API_KEY"
+            exit 1
+          fi
+          if [ -z "$KEY" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT_F3_WORKOUT secret is not set"
+            exit 1
+          fi
+
+      # firebase.json predeploy runs the TypeScript build.
+      - run: npm ci --prefix functions
+
+      - name: Deploy functions to Firebase
+        env:
+          ENV_FILE: ${{ secrets.FUNCTIONS_ENV_FILE }}
+          KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_F3_WORKOUT }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-key.json
+        run: |
+          printf '%s' "$ENV_FILE" > functions/.env
+          printf '%s' "$KEY" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          # Cloud Functions deploys fail transiently ("Failed to list
+          # functions", single-function update errors) — retry before failing
+          # the run; re-deploying is idempotent. --force deletes functions
+          # removed from source without a prompt, which is the intended
+          # outcome of removing one.
+          for attempt in 1 2 3; do
+            if npx firebase-tools@13 deploy --only functions --project f3-workout \
+              --message "gh-actions ${GITHUB_SHA::7}" --non-interactive --force; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Deploy attempt $attempt failed; retrying in 60s..."
+              sleep 60
+            fi
+          done
+          echo "Deploy failed after 3 attempts"
+          exit 1

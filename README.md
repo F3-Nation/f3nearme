@@ -234,7 +234,7 @@ npm run build:prod && firebase deploy
 npm run build:prod && firebase deploy --only hosting
 ```
 
-> **Note:** Hosting is also auto-deployed via GitHub Actions on any push to `main` that changes files under `src/`. Functions must be deployed manually.
+> **Note:** Both targets auto-deploy via GitHub Actions on push to `main`: hosting when `src/` changes (`firebase-hosting-merge.yml`), functions when `functions/` or `firebase.json` change (`deploy-functions.yml`). The functions workflow recreates the gitignored `functions/.env` from the `FUNCTIONS_ENV_FILE` repo secret — after rotating the API key, re-run `gh secret set FUNCTIONS_ENV_FILE < functions/.env`.
 
 ### Functions configuration (production)
 
