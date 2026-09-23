@@ -113,6 +113,10 @@ interface Beatdown {
   long: number;
   locationId: number;
   eventId: number;
+  // Next-occurrence enrichment from the F3 calendar (all.json only)
+  nextDate?: string;
+  nextQ?: string;
+  hcCount?: number;
   lastUpdated?: admin.firestore.FieldValue | admin.firestore.Timestamp | Date;
   deleted?: boolean;
   deletedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp | Date;
@@ -1104,16 +1108,183 @@ async function fetchAllBeatdownsFromApi(): Promise<Array<Beatdown & { id: string
   return beatdowns;
 }
 
+// ---------------------------------------------------------------------------
+// Next-occurrence Q / HC enrichment
+//
+// The Nation API has no bulk endpoint for planned Qs or HCs:
+//  - calendar-home-schedule returns ~2 weeks of instances per REGION,
+//    including plannedQs (one call per region, ~590 regions)
+//  - planned attendance (HCs) is only available per event INSTANCE
+// So we sweep the regions for Qs, then fetch attendance only for imminent
+// instances that have a Q assigned — in practice HCs without an assigned Q
+// are vanishingly rare. That keeps the sweep to ~2200 rate-paced calls.
+// The result is cached in Cloud Storage so webhook-triggered cache
+// regenerations reuse it; only the hourly scheduled run refreshes it.
+// ---------------------------------------------------------------------------
+
+interface CalendarScheduleEvent {
+  id: number;            // event instance id
+  seriesId: number | null;
+  startDate: string;     // YYYY-MM-DD, region-local
+  startTime: string | null;
+  plannedQs: string | string[] | null;
+}
+
+interface QHcInfo {
+  nextDate: string;
+  nextQ?: string;
+  hcCount?: number;
+}
+
+const QHC_CACHE_FILE = `${DATA_PREFIX}/qhc-cache.json`;
+const QHC_CACHE_MAX_AGE_MS = 50 * 60 * 1000; // hourly job refreshes; anything younger is reused
+const QHC_CONCURRENCY = 4;
+const QHC_MIN_SLOT_MS = 300; // with 4 workers this paces the sweep to ~12 req/s (API 429s at ~50+/s)
+const QHC_HC_WINDOW_DAYS = 2; // covers 95% of instances with HCs; day 3+ is noise
+const QHC_MAX_ATTENDANCE_CALLS = 2000;
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      // each slot takes at least QHC_MIN_SLOT_MS so the sweep stays under the API's rate limit
+      [results[i]] = await Promise.all([fn(items[i]), delay(QHC_MIN_SLOT_MS)]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Sweep every region's calendar schedule and build a map of
+ * eventId (series) -> next occurrence's date, planned Q, and HC count.
+ */
+async function buildQHcEnrichment(): Promise<Record<string, QHcInfo>> {
+  const startTime = Date.now();
+  const regionsResponse = await fetchWithRetry(`${API_BASE_URL}/v1/map/location/regions`);
+  const regions: Array<{ id: number }> = regionsResponse.regions ?? [];
+  console.log(`[QHC] Sweeping calendar schedules for ${regions.length} regions`);
+
+  let regionFailures = 0;
+  const regionEvents = await mapWithConcurrency(regions, QHC_CONCURRENCY, async (region) => {
+    try {
+      const res = await fetchWithRetry(
+        `${API_BASE_URL}/v1/event-instance/calendar-home-schedule?userId=0&regionOrgId=${region.id}`);
+      return (res.events ?? []) as CalendarScheduleEvent[];
+    } catch (error) {
+      regionFailures++;
+      return [];
+    }
+  });
+
+  // Keep only the soonest upcoming instance of each series — that's the
+  // occurrence the app's cards represent next.
+  const bySeries = new Map<number, CalendarScheduleEvent>();
+  for (const ev of regionEvents.flat()) {
+    if (!ev.seriesId || !ev.startDate) continue;
+    const current = bySeries.get(ev.seriesId);
+    const evKey = `${ev.startDate} ${ev.startTime ?? ''}`;
+    if (!current || evKey < `${current.startDate} ${current.startTime ?? ''}`) {
+      bySeries.set(ev.seriesId, ev);
+    }
+  }
+  console.log(`[QHC] Found upcoming instances for ${bySeries.size} series (${regionFailures} region fetch failures)`);
+
+  const enrichment: Record<string, QHcInfo> = {};
+  const hcWindowEnd = new Date(Date.now() + QHC_HC_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10);
+  const hcCandidates: CalendarScheduleEvent[] = [];
+
+  for (const [seriesId, ev] of bySeries) {
+    const nextQ = (Array.isArray(ev.plannedQs) ? ev.plannedQs.filter(Boolean).join(', ') : ev.plannedQs) || '';
+    if (!nextQ) continue;
+    enrichment[seriesId] = { nextDate: ev.startDate, nextQ };
+    if (ev.startDate <= hcWindowEnd) hcCandidates.push(ev);
+  }
+
+  const capped = hcCandidates.slice(0, QHC_MAX_ATTENDANCE_CALLS);
+  if (capped.length < hcCandidates.length) {
+    console.warn(`[QHC] Attendance lookups capped at ${QHC_MAX_ATTENDANCE_CALLS} of ${hcCandidates.length} candidates`);
+  }
+  console.log(`[QHC] Fetching attendance for ${capped.length} imminent Q'd instances`);
+  let hcInstances = 0;
+  await mapWithConcurrency(capped, QHC_CONCURRENCY, async (ev) => {
+    try {
+      const res = await fetchWithRetry(`${API_BASE_URL}/v1/attendance/event-instance/${ev.id}`);
+      const records: Array<{ isPlanned: boolean; attendanceTypes?: Array<{ type: string }> }> = res.attendance ?? [];
+      // HCs = planned attendees other than the Q/Co-Q, who is shown separately
+      const hcCount = records.filter(r =>
+        r.isPlanned && !(r.attendanceTypes ?? []).some(t => t.type?.includes('Q'))).length;
+      if (hcCount > 0) {
+        enrichment[ev.seriesId!].hcCount = hcCount;
+        hcInstances++;
+      }
+    } catch (error) {
+      // best effort — a missing HC badge is not worth failing the sweep
+    }
+  });
+
+  console.log(`[QHC] Sweep complete in ${Date.now() - startTime}ms: ${Object.keys(enrichment).length} series with a Q, ${hcInstances} with HCs`);
+  return enrichment;
+}
+
+/**
+ * Return the Q/HC enrichment map, using the Cloud Storage cache when fresh.
+ * With refresh=false this never calls the F3 API: it serves the cache at any
+ * age (the hourly job keeps it ~fresh) or returns empty if none exists yet.
+ */
+async function getQHcEnrichment(refresh: boolean): Promise<Record<string, QHcInfo>> {
+  const file = storage.bucket(BUCKET_NAME).file(QHC_CACHE_FILE);
+  try {
+    const [contents] = await file.download();
+    const cached = JSON.parse(contents.toString()) as { generatedAt: string; series: Record<string, QHcInfo> };
+    const ageMs = Date.now() - new Date(cached.generatedAt).getTime();
+    if (!refresh || ageMs < QHC_CACHE_MAX_AGE_MS) {
+      console.log(`[QHC] Using cached enrichment (${Math.round(ageMs / 60000)}min old, ${Object.keys(cached.series).length} series)`);
+      return cached.series;
+    }
+  } catch (error) {
+    if (!refresh) {
+      console.log(`[QHC] No enrichment cache yet; skipping Q/HC badges until the next scheduled sweep`);
+      return {};
+    }
+  }
+
+  const series = await buildQHcEnrichment();
+  await file.save(JSON.stringify({ generatedAt: new Date().toISOString(), series }), {
+    contentType: 'application/json',
+    gzip: true,
+  });
+  return series;
+}
+
 /**
  * Generate JSON cache file from the F3 Nation API and upload to Cloud Storage
  * Creates: /data/all.json - all active beatdowns (minified, stored gzipped)
  */
-async function generateJsonCache(): Promise<void> {
+async function generateJsonCache(options: { refreshQHc?: boolean } = {}): Promise<void> {
   const startTime = Date.now();
   console.log(`[JSON] Starting JSON cache generation`);
 
   try {
     const beatdowns = await fetchAllBeatdownsFromApi();
+
+    try {
+      const qhc = await getQHcEnrichment(options.refreshQHc === true);
+      let enriched = 0;
+      for (const bd of beatdowns) {
+        const info = qhc[bd.eventId];
+        if (info) {
+          Object.assign(bd, info);
+          enriched++;
+        }
+      }
+      console.log(`[QHC] Enriched ${enriched} beatdowns with next Q / HC info`);
+    } catch (qhcError) {
+      console.error(`[QHC] Enrichment failed; publishing without Q/HC badges:`, qhcError);
+    }
 
     const bucket = storage.bucket(BUCKET_NAME);
     const allFile = bucket.file(`${DATA_PREFIX}/all.json`);
@@ -1166,12 +1337,15 @@ async function generateJsonCache(): Promise<void> {
 /**
  * Callable function to manually regenerate JSON cache
  */
-export const adminRegenerateJsonCache = functions.https.onCall(async (data) => {
+export const adminRegenerateJsonCache = functions
+  .runWith({ timeoutSeconds: 540 })
+  .https.onCall(async (data) => {
   const startTime = Date.now();
   console.log(`[ADMIN] Regenerate JSON cache callable request`);
-  
+
   try {
-    await generateJsonCache();
+    // Pass {refreshQHc: true} to force a fresh Q/HC calendar sweep
+    await generateJsonCache({ refreshQHc: data?.refreshQHc === true });
 
     const duration = Date.now() - startTime;
     console.log(`[ADMIN] Successfully regenerated JSON cache in ${duration}ms`);
@@ -1490,7 +1664,9 @@ export async function syncAllBeatdowns(db: admin.firestore.Firestore, options?: 
 /**
  * Scheduled function to sync all beatdowns hourly (equivalent to running npm run sync)
  */
-export const scheduledSyncAllBeatdowns = functions.pubsub
+export const scheduledSyncAllBeatdowns = functions
+  .runWith({ timeoutSeconds: 540 }) // Q/HC sweep is ~2000 rate-paced API calls (~4 min)
+  .pubsub
   .schedule('every 1 hours')
   .timeZone('UTC')
   .onRun(async (context) => {
@@ -1498,10 +1674,11 @@ export const scheduledSyncAllBeatdowns = functions.pubsub
     const db = admin.firestore();
     await syncAllBeatdowns(db);
     console.log(`[SCHEDULED] Completed scheduled beatdown sync`);
-    
-    // Also regenerate JSON cache after sync
+
+    // Also regenerate JSON cache after sync; this is the run that refreshes
+    // the Q/HC enrichment cache for the hour
     console.log(`[SCHEDULED] Regenerating JSON cache after sync`);
-    await generateJsonCache();
+    await generateJsonCache({ refreshQHc: true });
     console.log(`[SCHEDULED] Completed JSON cache regeneration`);
   });
 
@@ -1572,7 +1749,8 @@ if (process.env.FUNCTIONS_EMULATOR === 'true') {
   exports.localTriggerJsonCache = functions.https.onRequest(async (req: Request, res: Response) => {
     console.log(`[LOCAL] Triggering generateJsonCache`);
     try {
-      await generateJsonCache();
+      // ?refreshQHc=1 forces a fresh Q/HC calendar sweep
+      await generateJsonCache({ refreshQHc: req.query.refreshQHc === '1' });
       res.status(200).json({ message: 'JSON cache generation completed' });
     } catch (error) {
       console.error(`[LOCAL] Error:`, error);

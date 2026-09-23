@@ -21,6 +21,13 @@ Discover F3 workout locations near you. Find a free, outdoor, peer-led workout g
 3. A **JSON cache** (`all.json`) is generated from Firestore and stored in **Cloud Storage**
 4. The **Angular app** loads workout data from the JSON cache (with Firestore as fallback)
 
+The hourly run also sweeps the F3 calendar for each workout's **next Q and HC count**
+(`calendar-home-schedule` per region, then attendance lookups for imminent Q'd instances —
+there is no bulk endpoint for either). The result is cached in Cloud Storage
+(`data/qhc-cache.json`, refreshed only by the hourly run since the sweep is ~2200 rate-paced
+API calls) and merged into `all.json` as optional `nextDate` / `nextQ` / `hcCount` fields,
+which the nearby cards show when the rendered day matches `nextDate`.
+
 ### Cloud Functions
 
 | Function | Trigger | Description |

@@ -119,6 +119,10 @@
           <ion-card-content>
             <p *ngIf="showRegion"><b>Region:</b>&nbsp;<span [innerHtml]="bd.region | highlight:filterText"></span></p>
             <p><b>Type:</b>&nbsp;<span [innerHtml]="bd.type | highlight:filterText"></span></p>
+            <p class="q-hc-line" *ngIf="bd.nextDate === day.dateISO && (bd.nextQ || bd.hcCount)">
+              <ng-container *ngIf="bd.nextQ"><b>Q:</b>&nbsp;{{ bd.nextQ }}</ng-container>
+              <ion-badge class="hc-badge" color="success" *ngIf="bd.hcCount">{{ bd.hcCount }} HC{{ bd.hcCount === 1 ? '' : 's' }}</ion-badge>
+            </p>
             <p>
               <a
                 target="_blank"

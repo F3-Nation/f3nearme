@@ -15,6 +15,11 @@ export interface Beatdown {
   lat: number;
   long: number;
   milesFromMe: number;
+  // Next occurrence's date (YYYY-MM-DD), planned Q, and HC count from the
+  // F3 calendar — only present when someone has signed up
+  nextDate?: string;
+  nextQ?: string;
+  hcCount?: number;
   lastUpdated?: Date;
   deleted?: boolean;
   deletedAt?: Date;
@@ -23,6 +28,7 @@ export interface Beatdown {
 interface Day {
   daysFromToday: number;  // 0 for today, 1 tomorrow, etc
   dateDisplay: string;    // Today, Tomorrow, Wednesday, Monday July 12, etc
+  dateISO: string;        // YYYY-MM-DD, to match against Beatdown.nextDate
   beatdowns: Beatdown[];  // the beatdowns ordered by distance from you
 }
 
@@ -327,7 +333,8 @@ export class NearbyPage {
       // only build up days that have beatdowns
       if (beatdowns.length > 0) {
         const dateDisplay = this.getDateDisplay(today, i);
-        this.days.push({daysFromToday: i, dateDisplay, beatdowns});
+        const dateISO = this.toLocalISO(this.addDays(today, i));
+        this.days.push({daysFromToday: i, dateDisplay, dateISO, beatdowns});
       }
     }
 
@@ -388,6 +395,15 @@ export class NearbyPage {
     var result = new Date(date);
     result.setDate(result.getDate() + days);
     return result;
+  }
+
+  /**
+   * Format a date as local YYYY-MM-DD (toISOString would shift to UTC)
+   */
+  toLocalISO(date: Date): string {
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${date.getFullYear()}-${month}-${day}`;
   }
 
   /**
