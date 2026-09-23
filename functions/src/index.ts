@@ -1139,8 +1139,11 @@ interface QHcInfo {
 const QHC_CACHE_FILE = `${DATA_PREFIX}/qhc-cache.json`;
 const QHC_CACHE_MAX_AGE_MS = 50 * 60 * 1000; // hourly job refreshes; anything younger is reused
 const QHC_CONCURRENCY = 4;
-const QHC_MIN_SLOT_MS = 300; // with 4 workers this paces the sweep to ~12 req/s (API 429s at ~50+/s)
-const QHC_HC_WINDOW_DAYS = 2; // covers 95% of instances with HCs; day 3+ is noise
+// 4 workers x 500ms floor = max 8 req/s. From inside GCP (near-zero latency)
+// 300ms slots produced a sustained ~13 req/s, which sat just above the F3
+// API's limiter and 429'd through the whole sweep; 8 req/s runs clean.
+const QHC_MIN_SLOT_MS = 500;
+const QHC_HC_WINDOW_DAYS = 1; // HC counts only matter for today/tomorrow instances
 const QHC_MAX_ATTENDANCE_CALLS = 2000;
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
