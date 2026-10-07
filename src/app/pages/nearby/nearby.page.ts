@@ -1,5 +1,6 @@
 import {Component} from '@angular/core';
 import {ActionSheetController, Platform} from '@ionic/angular';
+import {openDirections} from 'src/app/util/external-links';
 import {BeatdownService} from '../../services/beatdown.service';
 
 export interface Beatdown {
@@ -120,6 +121,13 @@ export class NearbyPage {
   ngOnInit() {
     this.setMyLocation();
     this.loadBeatdowns();
+  }
+
+  /** The address link: the phone's map app rather than a browser sheet. */
+  openDirections(event: Event, bd: Beatdown) {
+    event.preventDefault();
+    event.stopPropagation();
+    openDirections(bd.lat, bd.long);
   }
 
   get filterTooShort(): boolean {

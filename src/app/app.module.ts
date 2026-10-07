@@ -7,11 +7,13 @@ import {AngularFireFunctionsModule, REGION, USE_EMULATOR as USE_FUNCTIONS_EMULAT
 import {AngularFirestoreModule} from '@angular/fire/compat/firestore';
 import {BrowserModule} from '@angular/platform-browser';
 import {RouteReuseStrategy} from '@angular/router';
+import {ServiceWorkerModule} from '@angular/service-worker';
 import {IonicModule, IonicRouteStrategy} from '@ionic/angular';
 import {environment} from 'src/environments/environment';
 
 import {AppRoutingModule} from './app-routing.module';
 import {AppComponent} from './app.component';
+import {UpdateBannerComponent} from './components/update-banner/update-banner.component';
 
 const emulatorProviders: any[] = [];
 if (environment.useEmulators) {
@@ -23,6 +25,7 @@ if (environment.useEmulators) {
 @NgModule({
   declarations: [
     AppComponent,
+    UpdateBannerComponent,
   ],
   imports: [
     BrowserModule,
@@ -33,6 +36,15 @@ if (environment.useEmulators) {
     AngularFireAnalyticsModule,
     AngularFireFunctionsModule,
     AngularFirestoreModule,
+    // The worker was already being built (angular.json) but never registered,
+    // so the app got none of it. Register right away rather than waiting for
+    // Angular to report "stable": Firestore's live listeners keep it from ever
+    // settling, so the default strategy would wait the full 30s and a short
+    // first visit never got the app shell cached for the next launch.
+    ServiceWorkerModule.register('ngsw-worker.js', {
+      enabled: environment.production,
+      registrationStrategy: 'registerImmediately',
+    }),
   ],
   providers: [
     ScreenTrackingService,

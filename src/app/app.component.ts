@@ -1,4 +1,6 @@
-import { Component } from '@angular/core';
+import {Component} from '@angular/core';
+
+import {AppUpdateService} from './services/app-update.service';
 
 @Component({
   selector: 'app-root',
@@ -6,5 +8,9 @@ import { Component } from '@angular/core';
   styleUrls: ['app.component.scss'],
 })
 export class AppComponent {
-  constructor() {}
+  readonly updateReady$ = this.appUpdate.updateReady$;
+
+  constructor(private readonly appUpdate: AppUpdateService) {
+    appUpdate.start();
+  }
 }

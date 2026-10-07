@@ -1,0 +1,8 @@
+<div class="update-banner" *ngIf="ready$ | async" role="status" aria-live="polite">
+  <ion-icon name="sparkles" aria-hidden="true"></ion-icon>
+  <span class="message">A new version of F3 Near Me is ready.</span>
+  <button type="button" class="update" (click)="update()">Update</button>
+  <button type="button" class="later" aria-label="Not now" (click)="later()">
+    <ion-icon name="close" aria-hidden="true"></ion-icon>
+  </button>
+</div>

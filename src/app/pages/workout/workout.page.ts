@@ -3,6 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { BeatdownService } from '../../services/beatdown.service';
 import { Beatdown } from '../nearby/nearby.page';
 import { ToastController } from '@ionic/angular';
+import { directionsWebUrl, openDirections, openPlace, openWebsite } from 'src/app/util/external-links';
 
 @Component({
   selector: 'app-workout',
@@ -67,7 +68,7 @@ export class WorkoutPage implements OnInit {
         }
         this.workout = workout;
         this.mapEmbedUrl = `https://maps.google.com/maps?q=${workout.lat},${workout.long}&t=m&z=16&output=embed`;
-        this.directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${workout.lat},${workout.long}`;
+        this.directionsUrl = directionsWebUrl(workout.lat, workout.long);
         this.loadRelatedWorkouts();
         this.loading = false;
       },
@@ -135,15 +136,15 @@ export class WorkoutPage implements OnInit {
 
   openWebsite() {
     if (this.workout.website) {
-      window.open(this.workout.website, '_blank');
+      openWebsite(this.workout.website);
     }
   }
 
   openDirections() {
-    window.open(this.directionsUrl, '_blank');
+    openDirections(this.workout.lat, this.workout.long);
   }
 
   openMap() {
-    window.open(`https://www.google.com/maps/place/${this.workout.lat},${this.workout.long}`, '_blank');
+    openPlace(this.workout.lat, this.workout.long);
   }
 } 

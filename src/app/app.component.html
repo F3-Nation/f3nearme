@@ -1,3 +1,6 @@
 <ion-app>
-  <ion-router-outlet></ion-router-outlet>
+  <div class="app-shell" [class.has-update-banner]="updateReady$ | async">
+    <app-update-banner></app-update-banner>
+    <ion-router-outlet class="app-outlet"></ion-router-outlet>
+  </div>
 </ion-app>

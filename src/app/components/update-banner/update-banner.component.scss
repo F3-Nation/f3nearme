@@ -1,0 +1,66 @@
+:host {
+  display: block;
+  flex-shrink: 0;
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  // sits at the very top of the installed app, under the status bar
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px 16px;
+  background: var(--ion-color-primary, #3880ff);
+  color: var(--ion-color-primary-contrast, #fff);
+  font-size: 14px;
+  font-weight: 600;
+  animation: slide-down 250ms ease-out;
+
+  > ion-icon {
+    flex-shrink: 0;
+    font-size: 20px;
+  }
+
+  .message {
+    flex: 1;
+    min-width: 0;
+  }
+
+  button {
+    flex-shrink: 0;
+    font-family: inherit;
+    font-weight: 700;
+    color: inherit;
+    border: none;
+    cursor: pointer;
+  }
+
+  .update {
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--ion-color-primary, #3880ff);
+    font-size: 13px;
+  }
+
+  .later {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.15);
+    font-size: 18px;
+  }
+}
+
+@keyframes slide-down {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
