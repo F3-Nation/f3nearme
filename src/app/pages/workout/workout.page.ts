@@ -18,6 +18,8 @@ export class WorkoutPage implements OnInit {
   loading = true;
   error = false;
   canShare = false;
+  /** "Today", "Tomorrow" or "Thursday, Oct 9" for the Q/HC info, or '' once it is stale */
+  nextLabel = '';
 
   constructor(
     private route: ActivatedRoute,
@@ -67,6 +69,7 @@ export class WorkoutPage implements OnInit {
           return;
         }
         this.workout = workout;
+        this.nextLabel = this.getNextLabel(workout.nextDate);
         this.mapEmbedUrl = `https://maps.google.com/maps?q=${workout.lat},${workout.long}&t=m&z=16&output=embed`;
         this.directionsUrl = directionsWebUrl(workout.lat, workout.long);
         this.loadRelatedWorkouts();
@@ -132,6 +135,32 @@ export class WorkoutPage implements OnInit {
         console.error('Error loading related workouts:', err);
       }
     });
+  }
+
+  /**
+   * Label the Q/HC enrichment by how far out it is. The sweep only knows
+   * about the next occurrence, so anything already behind us is dropped
+   * rather than shown against the wrong day.
+   */
+  private getNextLabel(nextDate?: string): string {
+    if (!nextDate) {
+      return '';
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const [year, month, day] = nextDate.split('-').map(Number);
+    const next = new Date(year, month - 1, day);
+    const daysOut = Math.round((next.getTime() - today.getTime()) / 86400000);
+    if (daysOut < 0) {
+      return '';
+    }
+    if (daysOut === 0) {
+      return 'Today';
+    }
+    if (daysOut === 1) {
+      return 'Tomorrow';
+    }
+    return next.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   }
 
   openWebsite() {
