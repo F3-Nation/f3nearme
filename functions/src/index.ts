@@ -1263,6 +1263,180 @@ async function getQHcEnrichment(refresh: boolean): Promise<Record<string, QHcInf
   return series;
 }
 
+// ---------------------------------------------------------------------------
+// Boise-area HC enrichment
+//
+// The Boise regions (City of Trees, High Desert, Settlers, Canyon — and any
+// future Treasure Valley splits) run their own Slack-based stack instead of
+// the F3 Nation calendar, so the Nation sweep above never finds HCs for
+// them. Their scraper exposes a per-date preblast reaction summary where an
+// "hc" reaction is a hard commit. We fetch today's and tomorrow's summaries
+// (two small requests, no caching needed) on every cache generation and
+// overlay the counts onto beatdowns within BOISE_RADIUS_MILES of downtown
+// Boise, so new nearby regions are picked up automatically.
+// ---------------------------------------------------------------------------
+
+const BOISE_HC_URL = 'https://f3-scraper-rs.fly.dev/reactions_log/pre-blast-data';
+const BOISE_CENTER = { lat: 43.615, long: -116.2023 };
+const BOISE_RADIUS_MILES = 100;
+const BOISE_TIMEZONE = 'America/Boise';
+const BOISE_HC_FETCH_TIMEOUT_MS = 15000;
+const BOISE_SUMMARY_RULE = '--------------------';
+
+// Preblast headings that must never be matched against map names. Canyon's
+// "Liberty Park" AO is not on the Nation map, and fuzzy matching would pin
+// its HCs onto Settlers' distinct "OTB Liberty Park" AO.
+const BOISE_UNMATCHABLE_HEADINGS = new Set(['liberty park']);
+
+function milesBetween(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => deg * (Math.PI / 180);
+  const R = 3958.8; // Earth's radius in miles
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Boise-local calendar date (YYYY-MM-DD) and lowercase weekday, offset days from now. */
+function boiseDay(offsetDays: number): { dateISO: string; dayOfWeek: string } {
+  const d = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
+  return {
+    dateISO: d.toLocaleDateString('en-CA', { timeZone: BOISE_TIMEZONE }),
+    dayOfWeek: d.toLocaleDateString('en-US', { timeZone: BOISE_TIMEZONE, weekday: 'long' }).toLowerCase(),
+  };
+}
+
+/**
+ * Parses the scraper's plain-text preblast reaction summary into
+ * AO heading -> count of PAX still holding an "hc" reaction.
+ *
+ * Format: an AO heading is a line directly followed by the dashed rule;
+ * "Name:" lines introduce a PAX; an "hc:" line marks their HC and a
+ * "Removed hc" line within the same PAX block retracts it.
+ */
+function parseBoiseHcCounts(summary: string): Map<string, Set<string>> {
+  const hcs = new Map<string, Set<string>>();
+  const lines = summary.split('\n').map(line => line.trim());
+
+  let ao: string | undefined;
+  let pax: string | undefined;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || line === BOISE_SUMMARY_RULE || line === 'Reactions log:') continue;
+
+    const isHeading = lines[i + 1] === BOISE_SUMMARY_RULE && !line.endsWith(':') &&
+      !line.startsWith('first added') && !line.startsWith('Removed');
+    if (isHeading) {
+      ao = line.toLowerCase();
+      pax = undefined;
+      if (!hcs.has(ao)) hcs.set(ao, new Set());
+      continue;
+    }
+
+    if (line === 'hc:') {
+      if (ao && pax) hcs.get(ao)!.add(pax);
+      continue;
+    }
+    if (line.startsWith('Removed hc')) {
+      if (ao && pax) hcs.get(ao)!.delete(pax);
+      continue;
+    }
+    if (line === 'sc:' || line.startsWith('Removed ') || line.startsWith('first added')) {
+      continue;
+    }
+    if (line.endsWith(':')) {
+      pax = line.slice(0, -1).trim().toLowerCase();
+    }
+  }
+
+  return hcs;
+}
+
+function normalizeBoiseAoName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Tokens for fuzzy AO matching; "the" carries no signal ("Gem" vs "The Gem"). */
+function boiseAoTokens(name: string): string[] {
+  return normalizeBoiseAoName(name).split(' ').filter(t => t && t !== 'the');
+}
+
+/**
+ * Match a scraper AO heading to beatdowns by name. The headings are Slack
+ * channel names while the map uses fuller location names ("Cynthia Mann" vs
+ * "OTB Cynthia Mann Elementary", "Ruckership Canyon" vs "Canyon Ruckership"),
+ * so after an exact normalized match we fall back to sorted-token equality,
+ * then to a heading-tokens-subset match — but only when it is unambiguous
+ * across the candidate names.
+ */
+function matchBoiseBeatdowns(heading: string, beatdowns: Beatdown[]): Beatdown[] {
+  const normalized = normalizeBoiseAoName(heading);
+  if (BOISE_UNMATCHABLE_HEADINGS.has(normalized)) return [];
+
+  const exact = beatdowns.filter(bd => normalizeBoiseAoName(bd.name) === normalized);
+  if (exact.length > 0) return exact;
+
+  const tokenKey = boiseAoTokens(heading).sort().join(' ');
+  if (!tokenKey) return [];
+  const tokenEqual = beatdowns.filter(bd => boiseAoTokens(bd.name).sort().join(' ') === tokenKey);
+  if (tokenEqual.length > 0) return tokenEqual;
+
+  const headingTokens = boiseAoTokens(heading);
+  const subset = beatdowns.filter(bd => {
+    const nameTokens = new Set(boiseAoTokens(bd.name));
+    return headingTokens.every(t => nameTokens.has(t));
+  });
+  // Only trust a subset match when every candidate is the same AO
+  const names = new Set(subset.map(bd => normalizeBoiseAoName(bd.name)));
+  return names.size === 1 ? subset : [];
+}
+
+/**
+ * Overlay HC counts from the Boise scraper onto Boise-area beatdowns whose
+ * next occurrence is today or tomorrow (the only window HCs matter for).
+ */
+async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
+  const boiseBds = beatdowns.filter(bd =>
+    typeof bd.lat === 'number' && typeof bd.long === 'number' &&
+    milesBetween(bd.lat, bd.long, BOISE_CENTER.lat, BOISE_CENTER.long) <= BOISE_RADIUS_MILES);
+  if (boiseBds.length === 0) return;
+
+  const days = [boiseDay(0), boiseDay(1)];
+  const summaries = await Promise.all(days.map(async ({ dateISO }) => {
+    try {
+      const res = await fetch(`${BOISE_HC_URL}?date=${dateISO}`, {
+        signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      return await res.text();
+    } catch (error) {
+      // best effort — a missing HC badge is not worth failing the publish
+      console.warn(`[BoiseHC] Failed to fetch preblast summary for ${dateISO}:`, error);
+      return null;
+    }
+  }));
+
+  let enriched = 0;
+  days.forEach(({ dateISO, dayOfWeek }, i) => {
+    const summary = summaries[i];
+    if (summary === null) return;
+    const dayBds = boiseBds.filter(bd => bd.dayOfWeek?.toLowerCase() === dayOfWeek);
+    for (const [heading, pax] of parseBoiseHcCounts(summary)) {
+      if (pax.size === 0) continue;
+      for (const bd of matchBoiseBeatdowns(heading, dayBds)) {
+        // Don't fight a Nation-calendar enrichment that points at another date
+        if (bd.nextDate && bd.nextDate !== dateISO) continue;
+        bd.nextDate = dateISO;
+        bd.hcCount = pax.size;
+        enriched++;
+      }
+    }
+  });
+  console.log(`[BoiseHC] Enriched ${enriched} of ${boiseBds.length} Boise-area beatdowns with HC counts`);
+}
+
 /**
  * Generate JSON cache file from the F3 Nation API and upload to Cloud Storage
  * Creates: /data/all.json - all active beatdowns (minified, stored gzipped)
@@ -1287,6 +1461,14 @@ async function generateJsonCache(options: { refreshQHc?: boolean } = {}): Promis
       console.log(`[QHC] Enriched ${enriched} beatdowns with next Q / HC info`);
     } catch (qhcError) {
       console.error(`[QHC] Enrichment failed; publishing without Q/HC badges:`, qhcError);
+    }
+
+    try {
+      // The Boise regions keep HCs in their own stack, invisible to the
+      // Nation calendar sweep — overlay them from their scraper.
+      await applyBoiseHcEnrichment(beatdowns);
+    } catch (boiseError) {
+      console.error(`[BoiseHC] Enrichment failed; publishing without Boise HC badges:`, boiseError);
     }
 
     const bucket = storage.bucket(BUCKET_NAME);
