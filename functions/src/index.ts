@@ -1264,19 +1264,22 @@ async function getQHcEnrichment(refresh: boolean): Promise<Record<string, QHcInf
 }
 
 // ---------------------------------------------------------------------------
-// Boise-area HC enrichment
+// Boise-area Q and HC enrichment
 //
 // The Boise regions (City of Trees, High Desert, Settlers, Canyon — and any
 // future Treasure Valley splits) run their own Slack-based stack instead of
-// the F3 Nation calendar, so the Nation sweep above never finds HCs for
-// them. Their scraper exposes a per-date preblast reaction summary where an
-// "hc" reaction is a hard commit. We fetch today's and tomorrow's summaries
-// (two small requests, no caching needed) on every cache generation and
-// overlay the counts onto beatdowns within BOISE_RADIUS_MILES of downtown
-// Boise, so new nearby regions are picked up automatically.
+// the F3 Nation calendar, so the Nation sweep above never finds Qs or HCs
+// for them. Their scraper exposes the Slack Q line-up per AO and date, and a
+// per-date preblast reaction summary where an "hc" reaction is a hard
+// commit. We fetch today's and tomorrow's (three small requests, no caching
+// needed) on every cache generation and overlay the Q and the committed
+// count onto beatdowns within BOISE_RADIUS_MILES of downtown Boise, so new
+// nearby regions are picked up automatically.
 // ---------------------------------------------------------------------------
 
 const BOISE_HC_URL = 'https://f3-scraper-rs.fly.dev/reactions_log/pre-blast-data';
+// The Boise Q line-up (who is Q'ing each AO on each date) lives in Slack too
+const BOISE_Q_URL = 'https://f3-scraper-rs.fly.dev/q_line_up/list';
 const BOISE_CENTER = { lat: 43.615, long: -116.2023 };
 const BOISE_RADIUS_MILES = 100;
 const BOISE_TIMEZONE = 'America/Boise';
@@ -1393,9 +1396,52 @@ function matchBoiseBeatdowns(heading: string, beatdowns: Beatdown[]): Beatdown[]
   return names.size === 1 ? subset : [];
 }
 
+interface BoiseQLineupEntry {
+  ao: string;
+  date: string;      // YYYY-MM-DD
+  closed: boolean;
+  text: string | null;
+  qs: string[] | null;
+}
+
+/** The scraper's PAX names are lowercase ("pete dean"); show them as "Pete Dean". */
+function boiseDisplayName(name: string): string {
+  return name.trim().split(/\s+/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 /**
- * Overlay HC counts from the Boise scraper onto Boise-area beatdowns whose
- * next occurrence is today or tomorrow (the only window HCs matter for).
+ * The Q line-up keys AOs by Slack channel name ("old-glory",
+ * "otb-cynthia-mann", "1st-f") while the preblast summary and the map use
+ * spoken names. Turn the channel name into the spoken form so it goes
+ * through the same matcher as the preblast headings.
+ */
+function boiseLineupAoName(channel: string): string {
+  return channel.replace(/-/g, ' ').replace(/^otb\s+/i, '').trim();
+}
+
+/** Who has the Q at each Boise AO between two dates, inclusive. */
+async function fetchBoiseQLineup(startISO: string, endISO: string): Promise<BoiseQLineupEntry[]> {
+  try {
+    const res = await fetch(`${BOISE_Q_URL}?start=${startISO}&end=${endISO}`, {
+      signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const entries = await res.json();
+    return Array.isArray(entries) ? entries : [];
+  } catch (error) {
+    // best effort — a missing Q is not worth failing the publish
+    console.warn(`[BoiseHC] Failed to fetch Q line-up ${startISO}..${endISO}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Overlay the Slack Q and the committed count from the Boise scraper onto
+ * Boise-area beatdowns whose next occurrence is today or tomorrow (the only
+ * window either matters for). The Q counts as committed whether or not they
+ * also HC'd, the same way the F3 Boise app counts them.
  */
 async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
   const boiseBds = beatdowns.filter(bd =>
@@ -1404,37 +1450,64 @@ async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
   if (boiseBds.length === 0) return;
 
   const days = [boiseDay(0), boiseDay(1)];
-  const summaries = await Promise.all(days.map(async ({ dateISO }) => {
-    try {
-      const res = await fetch(`${BOISE_HC_URL}?date=${dateISO}`, {
-        signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      return await res.text();
-    } catch (error) {
-      // best effort — a missing HC badge is not worth failing the publish
-      console.warn(`[BoiseHC] Failed to fetch preblast summary for ${dateISO}:`, error);
-      return null;
-    }
-  }));
+  const [summaries, lineup] = await Promise.all([
+    Promise.all(days.map(async ({ dateISO }) => {
+      try {
+        const res = await fetch(`${BOISE_HC_URL}?date=${dateISO}`, {
+          signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        return await res.text();
+      } catch (error) {
+        // best effort — a missing HC badge is not worth failing the publish
+        console.warn(`[BoiseHC] Failed to fetch preblast summary for ${dateISO}:`, error);
+        return null;
+      }
+    })),
+    fetchBoiseQLineup(days[0].dateISO, days[1].dateISO),
+  ]);
 
   let enriched = 0;
   days.forEach(({ dateISO, dayOfWeek }, i) => {
-    const summary = summaries[i];
-    if (summary === null) return;
     const dayBds = boiseBds.filter(bd => bd.dayOfWeek?.toLowerCase() === dayOfWeek);
-    for (const [heading, pax] of parseBoiseHcCounts(summary)) {
-      if (pax.size === 0) continue;
-      for (const bd of matchBoiseBeatdowns(heading, dayBds)) {
-        // Don't fight a Nation-calendar enrichment that points at another date
-        if (bd.nextDate && bd.nextDate !== dateISO) continue;
-        bd.nextDate = dateISO;
-        bd.hcCount = pax.size;
-        enriched++;
+    // everyone committed to each beatdown that day: HCs, plus the Q
+    const committed = new Map<Beatdown, Set<string>>();
+    const add = (bd: Beatdown, names: Iterable<string>) => {
+      const set = committed.get(bd) ?? new Set<string>();
+      for (const name of names) set.add(name.toLowerCase());
+      committed.set(bd, set);
+    };
+
+    const summary = summaries[i];
+    if (summary !== null) {
+      for (const [heading, pax] of parseBoiseHcCounts(summary)) {
+        if (pax.size === 0) continue;
+        for (const bd of matchBoiseBeatdowns(heading, dayBds)) add(bd, pax);
       }
     }
+
+    const qs = new Map<Beatdown, string>();
+    for (const entry of lineup) {
+      if (entry.date !== dateISO || entry.closed || !entry.qs?.length) continue;
+      const names = entry.qs.filter(Boolean);
+      if (names.length === 0) continue;
+      for (const bd of matchBoiseBeatdowns(boiseLineupAoName(entry.ao), dayBds)) {
+        qs.set(bd, names.map(boiseDisplayName).join(', '));
+        add(bd, names);
+      }
+    }
+
+    for (const [bd, names] of committed) {
+      // Don't fight a Nation-calendar enrichment that points at another date
+      if (bd.nextDate && bd.nextDate !== dateISO) continue;
+      bd.nextDate = dateISO;
+      bd.hcCount = names.size;
+      const q = qs.get(bd);
+      if (q) bd.nextQ = q;
+      enriched++;
+    }
   });
-  console.log(`[BoiseHC] Enriched ${enriched} of ${boiseBds.length} Boise-area beatdowns with HC counts`);
+  console.log(`[BoiseHC] Enriched ${enriched} of ${boiseBds.length} Boise-area beatdowns with Qs and HC counts`);
 }
 
 /**
