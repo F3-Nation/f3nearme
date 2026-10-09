@@ -34,6 +34,9 @@
 
     .hc-badge {
       vertical-align: middle;
+      // Match the nearby cards: the community's highlighter-yellow HC colors
+      --background: #fbe34d;
+      --color: #121212;
     }
   }
 

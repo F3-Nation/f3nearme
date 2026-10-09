@@ -24,6 +24,11 @@
   .hc-badge {
     margin-left: 6px;
     vertical-align: middle;
+    // The community's highlighter-yellow HC colors (like the Slack :hc:
+    // reaction these counts come from). Black-on-yellow holds contrast in
+    // both themes, so no dark-mode override.
+    --background: #fbe34d;
+    --color: #121212;
   }
 
   // position the icon in the top right of the card

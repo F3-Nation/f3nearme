@@ -60,7 +60,7 @@
               <h2>{{ nextLabel }}</h2>
               <p class="q-hc-line">
                 <ng-container *ngIf="workout.nextQ"><b>Q:</b>&nbsp;{{ workout.nextQ }}</ng-container>
-                <ion-badge class="hc-badge" color="success" *ngIf="workout.hcCount">{{ workout.hcCount }} HC{{ workout.hcCount === 1 ? '' : 's' }}</ion-badge>
+                <ion-badge class="hc-badge" *ngIf="workout.hcCount">{{ workout.hcCount }} HC{{ workout.hcCount === 1 ? '' : 's' }}</ion-badge>
               </p>
             </ion-label>
           </ion-item>
