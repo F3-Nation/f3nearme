@@ -95,11 +95,6 @@ interface EventsResponse {
   events: ApiEvent[];
 }
 
-interface LocationsResponse {
-  locations: ApiLocation[];
-  totalCount?: number;
-}
-
 interface Beatdown {
   dayOfWeek: string;
   timeString: string;
@@ -1068,18 +1063,39 @@ export const mapWebhook = functions.https.onRequest(async (req: Request, res: Re
 });
 
 /**
+ * Fetch every row from a paginated F3 Nation list endpoint. The API caps
+ * pageSize at 100 (it used to accept huge values and return everything in
+ * one response), so walk pageIndex until totalCount rows are collected.
+ */
+async function fetchAllPages<T>(path: string, key: 'events' | 'locations'): Promise<T[]> {
+  const pageSize = 100;
+  const items: T[] = [];
+  let totalCount = Infinity;
+  for (let pageIndex = 0; items.length < totalCount; pageIndex++) {
+    const response = await fetchWithRetry(`${API_BASE_URL}${path}?pageIndex=${pageIndex}&pageSize=${pageSize}`);
+    const page = (response?.[key] ?? []) as T[];
+    if (typeof response?.totalCount === 'number') {
+      totalCount = response.totalCount;
+    }
+    items.push(...page);
+    if (page.length < pageSize) break;
+    if (pageIndex >= 2000) throw new Error(`Pagination runaway fetching ${path} (${items.length} rows)`);
+  }
+  return items;
+}
+
+/**
  * Fetch all active, public beatdowns directly from the F3 Nation API.
  * This is the source of truth for the JSON cache — Firestore is only
  * maintained for legacy clients during the migration window.
  */
 async function fetchAllBeatdownsFromApi(): Promise<Array<Beatdown & { id: string }>> {
-  const eventsResponse = await fetchWithRetry(`${API_BASE_URL}/v1/event?pageSize=100000`) as EventsResponse;
-  const events = eventsResponse.events;
+  const events = await fetchAllPages<ApiEvent>('/v1/event', 'events');
   console.log(`[JSON] Fetched ${events.length} events from API`);
 
-  const locationsResponse = await fetchWithRetry(`${API_BASE_URL}/v1/location`) as LocationsResponse;
+  const locations = await fetchAllPages<ApiLocation>('/v1/location', 'locations');
   const locationMap = new Map<number, ApiLocation>();
-  for (const location of locationsResponse.locations) {
+  for (const location of locations) {
     locationMap.set(location.id, location);
   }
   console.log(`[JSON] Fetched ${locationMap.size} locations from API`);
@@ -1873,17 +1889,14 @@ export async function syncAllBeatdowns(db: admin.firestore.Firestore, options?: 
 
     // Fetch all events from API
     console.log(`[SYNC] Fetching events from API...`);
-    const EVENTS_URL = `${API_BASE_URL}/v1/event?pageSize=100000`;
-    const eventsResponse = await fetchWithRetry(EVENTS_URL) as EventsResponse;
-    const events = eventsResponse.events;
+    const events = await fetchAllPages<ApiEvent>('/v1/event', 'events');
     console.log(`[SYNC] Found ${events.length} events in API`);
 
     // Fetch all locations from API
     console.log(`[SYNC] Fetching locations from API...`);
-    const LOCATIONS_URL = `${API_BASE_URL}/v1/location`;
-    const locationsResponse = await fetchWithRetry(LOCATIONS_URL) as LocationsResponse;
+    const locations = await fetchAllPages<ApiLocation>('/v1/location', 'locations');
     const locationMap = new Map<number, ApiLocation>();
-    for (const location of locationsResponse.locations) {
+    for (const location of locations) {
       locationMap.set(location.id, location);
     }
     console.log(`[SYNC] Fetched ${locationMap.size} locations from API`);
