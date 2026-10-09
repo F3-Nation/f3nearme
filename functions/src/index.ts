@@ -1271,10 +1271,15 @@ async function getQHcEnrichment(refresh: boolean): Promise<Record<string, QHcInf
 // the F3 Nation calendar, so the Nation sweep above never finds Qs or HCs
 // for them. Their scraper exposes the Slack Q line-up per AO and date, and a
 // per-date preblast reaction summary where an "hc" reaction is a hard
-// commit. We fetch today's and tomorrow's (three small requests, no caching
-// needed) on every cache generation and overlay the Q and the committed
-// count onto beatdowns within BOISE_RADIUS_MILES of downtown Boise, so new
-// nearby regions are picked up automatically.
+// commit. The data is overlaid onto beatdowns within BOISE_RADIUS_MILES of
+// downtown Boise, so new nearby regions are picked up automatically.
+//
+// HCs and Q swaps happen in Slack right up until launch, so a dedicated
+// 10-minute schedule (scheduledBoiseQHcSync) fetches today's and tomorrow's
+// data (three small requests), caches it in Cloud Storage, and republishes
+// all.json with the fresh overlay. The main hourly sync never calls the
+// scraper — it applies the latest cached data, so an outage or slow response
+// at the scraper can only ever delay Boise badges, never the main publish.
 // ---------------------------------------------------------------------------
 
 const BOISE_HC_URL = 'https://f3-scraper-rs.fly.dev/reactions_log/pre-blast-data';
@@ -1423,52 +1428,77 @@ function boiseLineupAoName(channel: string): string {
 
 /** Who has the Q at each Boise AO between two dates, inclusive. */
 async function fetchBoiseQLineup(startISO: string, endISO: string): Promise<BoiseQLineupEntry[]> {
-  try {
-    const res = await fetch(`${BOISE_Q_URL}?start=${startISO}&end=${endISO}`, {
-      signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const entries = await res.json();
-    return Array.isArray(entries) ? entries : [];
-  } catch (error) {
-    // best effort — a missing Q is not worth failing the publish
-    console.warn(`[BoiseHC] Failed to fetch Q line-up ${startISO}..${endISO}:`, error);
-    return [];
-  }
+  const res = await fetch(`${BOISE_Q_URL}?start=${startISO}&end=${endISO}`, {
+    signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  const entries = await res.json();
+  return Array.isArray(entries) ? entries : [];
 }
 
-/**
- * Overlay the Slack Q and the committed count from the Boise scraper onto
- * Boise-area beatdowns whose next occurrence is today or tomorrow (the only
- * window either matters for). The Q counts as committed whether or not they
- * also HC'd, the same way the F3 Boise app counts them.
- */
-async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
-  const boiseBds = beatdowns.filter(bd =>
-    typeof bd.lat === 'number' && typeof bd.long === 'number' &&
-    milesBetween(bd.lat, bd.long, BOISE_CENTER.lat, BOISE_CENTER.long) <= BOISE_RADIUS_MILES);
-  if (boiseBds.length === 0) return;
+/** One Boise-local day of scraper data, in a shape that serializes to the cache file. */
+interface BoiseQHcDay {
+  dateISO: string;
+  dayOfWeek: string;
+  hcsByHeading: Record<string, string[]>;  // preblast AO heading -> PAX holding an HC
+  qsByAo: Record<string, string[]>;        // spoken AO name -> who has the Q
+}
 
+const BOISE_QHC_CACHE_FILE = `${DATA_PREFIX}/boise-qhc-cache.json`;
+// The 10-minute schedule keeps the cache fresh; if it has been down long
+// enough for the data to be this old, publish without Boise badges rather
+// than with counts nobody has been able to change.
+const BOISE_QHC_CACHE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Fetch today's and tomorrow's Q line-up and HC reactions from the Boise
+ * scraper. Throws if any source fails — callers keep the previous data
+ * rather than publishing a partial picture (e.g. HCs without their Q).
+ */
+async function fetchBoiseQHcDays(): Promise<BoiseQHcDay[]> {
   const days = [boiseDay(0), boiseDay(1)];
   const [summaries, lineup] = await Promise.all([
     Promise.all(days.map(async ({ dateISO }) => {
-      try {
-        const res = await fetch(`${BOISE_HC_URL}?date=${dateISO}`, {
-          signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        return await res.text();
-      } catch (error) {
-        // best effort — a missing HC badge is not worth failing the publish
-        console.warn(`[BoiseHC] Failed to fetch preblast summary for ${dateISO}:`, error);
-        return null;
-      }
+      const res = await fetch(`${BOISE_HC_URL}?date=${dateISO}`, {
+        signal: AbortSignal.timeout(BOISE_HC_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      return res.text();
     })),
     fetchBoiseQLineup(days[0].dateISO, days[1].dateISO),
   ]);
 
+  return days.map(({ dateISO, dayOfWeek }, i) => {
+    const hcsByHeading: Record<string, string[]> = {};
+    for (const [heading, pax] of parseBoiseHcCounts(summaries[i])) {
+      if (pax.size > 0) hcsByHeading[heading] = [...pax];
+    }
+
+    const qsByAo: Record<string, string[]> = {};
+    for (const entry of lineup) {
+      if (entry.date !== dateISO || entry.closed || !entry.qs?.length) continue;
+      const names = entry.qs.filter(Boolean);
+      if (names.length > 0) qsByAo[boiseLineupAoName(entry.ao)] = names;
+    }
+
+    return { dateISO, dayOfWeek, hcsByHeading, qsByAo };
+  });
+}
+
+/**
+ * Overlay the Slack Q and the committed count onto Boise-area beatdowns
+ * whose next occurrence is today or tomorrow (the only window either
+ * matters for). The Q counts as committed whether or not they also HC'd,
+ * the same way the F3 Boise app counts them. Pure matching — no network.
+ */
+function applyBoiseQHcDays(beatdowns: Beatdown[], days: BoiseQHcDay[]): number {
+  const boiseBds = beatdowns.filter(bd =>
+    typeof bd.lat === 'number' && typeof bd.long === 'number' &&
+    milesBetween(bd.lat, bd.long, BOISE_CENTER.lat, BOISE_CENTER.long) <= BOISE_RADIUS_MILES);
+  if (boiseBds.length === 0) return 0;
+
   let enriched = 0;
-  days.forEach(({ dateISO, dayOfWeek }, i) => {
+  for (const { dateISO, dayOfWeek, hcsByHeading, qsByAo } of days) {
     const dayBds = boiseBds.filter(bd => bd.dayOfWeek?.toLowerCase() === dayOfWeek);
     // everyone committed to each beatdown that day: HCs, plus the Q
     const committed = new Map<Beatdown, Set<string>>();
@@ -1478,20 +1508,13 @@ async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
       committed.set(bd, set);
     };
 
-    const summary = summaries[i];
-    if (summary !== null) {
-      for (const [heading, pax] of parseBoiseHcCounts(summary)) {
-        if (pax.size === 0) continue;
-        for (const bd of matchBoiseBeatdowns(heading, dayBds)) add(bd, pax);
-      }
+    for (const [heading, pax] of Object.entries(hcsByHeading)) {
+      for (const bd of matchBoiseBeatdowns(heading, dayBds)) add(bd, pax);
     }
 
     const qs = new Map<Beatdown, string>();
-    for (const entry of lineup) {
-      if (entry.date !== dateISO || entry.closed || !entry.qs?.length) continue;
-      const names = entry.qs.filter(Boolean);
-      if (names.length === 0) continue;
-      for (const bd of matchBoiseBeatdowns(boiseLineupAoName(entry.ao), dayBds)) {
+    for (const [ao, names] of Object.entries(qsByAo)) {
+      for (const bd of matchBoiseBeatdowns(ao, dayBds)) {
         qs.set(bd, names.map(boiseDisplayName).join(', '));
         add(bd, names);
       }
@@ -1506,8 +1529,103 @@ async function applyBoiseHcEnrichment(beatdowns: Beatdown[]): Promise<void> {
       if (q) bd.nextQ = q;
       enriched++;
     }
-  });
+  }
   console.log(`[BoiseHC] Enriched ${enriched} of ${boiseBds.length} Boise-area beatdowns with Qs and HC counts`);
+  return enriched;
+}
+
+/**
+ * Overlay the cached Boise data onto freshly built beatdowns. Used by the
+ * main sync so it never waits on the Boise scraper; the 10-minute schedule
+ * is what keeps the cache fresh.
+ */
+async function applyBoiseQHcFromCache(beatdowns: Beatdown[]): Promise<void> {
+  const file = storage.bucket(BUCKET_NAME).file(BOISE_QHC_CACHE_FILE);
+  let cached: { generatedAt: string; days: BoiseQHcDay[] };
+  try {
+    const [contents] = await file.download();
+    cached = JSON.parse(contents.toString());
+  } catch (error) {
+    console.log(`[BoiseHC] No Boise Q/HC cache yet; skipping Boise badges until the next scheduled refresh`);
+    return;
+  }
+  const ageMs = Date.now() - new Date(cached.generatedAt).getTime();
+  if (!(ageMs < BOISE_QHC_CACHE_MAX_AGE_MS)) {
+    console.warn(`[BoiseHC] Boise Q/HC cache is ${Math.round(ageMs / 60000)}min old; skipping Boise badges`);
+    return;
+  }
+  applyBoiseQHcDays(beatdowns, cached.days);
+}
+
+/**
+ * Refresh the Boise Q/HC cache from the scraper and republish all.json with
+ * the fresh overlay, without rebuilding the beatdowns from the Nation API.
+ * Runs on its own frequent schedule so Slack HCs and Q swaps show up within
+ * minutes instead of waiting on the hourly sync.
+ */
+async function refreshBoiseQHc(): Promise<void> {
+  const days = await fetchBoiseQHcDays();
+  const bucket = storage.bucket(BUCKET_NAME);
+  await bucket.file(BOISE_QHC_CACHE_FILE).save(
+    JSON.stringify({ generatedAt: new Date().toISOString(), days }),
+    { contentType: 'application/json', gzip: true });
+
+  const allFile = bucket.file(`${DATA_PREFIX}/all.json`);
+  let contents: Buffer;
+  let generation: string | number | undefined;
+  let prevMetadata: Record<string, string> = {};
+  try {
+    const [meta] = await allFile.getMetadata();
+    generation = meta.generation;
+    prevMetadata = (meta.metadata as Record<string, string>) ?? {};
+    [contents] = await allFile.download();
+  } catch (error) {
+    console.log(`[BoiseHC] No all.json to overlay yet; cache saved for the next sync`);
+    return;
+  }
+
+  const beatdowns: Beatdown[] = JSON.parse(contents.toString());
+  const before = JSON.stringify(beatdowns);
+  // Rebuild the overlay from scratch so retracted HCs and Q swaps disappear.
+  // Every region within the radius lives on the Boise stack, not the Nation
+  // calendar, so there is no Nation enrichment here to preserve.
+  for (const bd of beatdowns) {
+    if (typeof bd.lat === 'number' && typeof bd.long === 'number' &&
+        milesBetween(bd.lat, bd.long, BOISE_CENTER.lat, BOISE_CENTER.long) <= BOISE_RADIUS_MILES) {
+      delete bd.nextDate;
+      delete bd.nextQ;
+      delete bd.hcCount;
+    }
+  }
+  applyBoiseQHcDays(beatdowns, days);
+
+  const allJson = JSON.stringify(beatdowns);
+  if (allJson === before) {
+    console.log(`[BoiseHC] all.json already up to date; nothing to republish`);
+    return;
+  }
+
+  try {
+    await allFile.save(allJson, {
+      contentType: 'application/json',
+      gzip: true,
+      // Refuse to clobber a publish that landed while we were working; the
+      // next tick (or the sync itself, via the cache) carries the fresh data
+      preconditionOpts: { ifGenerationMatch: Number(generation) },
+      metadata: {
+        cacheControl: 'public, max-age=300, stale-while-revalidate=3600',
+        metadata: { ...prevMetadata, boiseRefreshedAt: new Date().toISOString() },
+      },
+    });
+  } catch (error: any) {
+    if (error?.code === 412) {
+      console.log(`[BoiseHC] all.json changed underneath us; skipping republish this tick`);
+      return;
+    }
+    throw error;
+  }
+  await allFile.makePublic();
+  console.log(`[BoiseHC] Republished all.json with fresh Boise Q/HC data`);
 }
 
 /**
@@ -1537,11 +1655,12 @@ async function generateJsonCache(options: { refreshQHc?: boolean } = {}): Promis
     }
 
     try {
-      // The Boise regions keep HCs in their own stack, invisible to the
-      // Nation calendar sweep — overlay them from their scraper.
-      await applyBoiseHcEnrichment(beatdowns);
+      // The Boise regions keep Qs and HCs in their own stack, invisible to
+      // the Nation calendar sweep — overlay them from the cache the
+      // 10-minute Boise schedule maintains (never calls their scraper here)
+      await applyBoiseQHcFromCache(beatdowns);
     } catch (boiseError) {
-      console.error(`[BoiseHC] Enrichment failed; publishing without Boise HC badges:`, boiseError);
+      console.error(`[BoiseHC] Enrichment failed; publishing without Boise Q/HC badges:`, boiseError);
     }
 
     const bucket = storage.bucket(BUCKET_NAME);
@@ -1938,6 +2057,25 @@ export const scheduledSyncAllBeatdowns = functions
     console.log(`[SCHEDULED] Regenerating JSON cache after sync`);
     await generateJsonCache({ refreshQHc: true });
     console.log(`[SCHEDULED] Completed JSON cache regeneration`);
+  });
+
+/**
+ * Scheduled function to refresh Boise Q/HC data every 10 minutes. Separate
+ * from the hourly sync so Slack HCs and Q swaps show up within minutes, and
+ * so a slow or down Boise scraper can never hold up the main publish.
+ */
+export const scheduledBoiseQHcSync = functions
+  .runWith({ timeoutSeconds: 120 })
+  .pubsub
+  .schedule('every 10 minutes')
+  .timeZone('UTC')
+  .onRun(async () => {
+    try {
+      await refreshBoiseQHc();
+    } catch (error) {
+      // Keep the previous cache and published data; the next tick retries
+      console.warn(`[BoiseHC] Scheduled refresh failed; keeping previous data:`, error);
+    }
   });
 
 /**
