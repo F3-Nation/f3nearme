@@ -36,6 +36,36 @@
     </ion-card-content>
   </ion-card>
 
+  <!-- Regenerate JSON Cache Section -->
+  <ion-card>
+    <ion-card-header>
+      <ion-card-title>📦 Regenerate Cache</ion-card-title>
+      <ion-card-subtitle>Rebuild all.json from the F3 API (with Q/HC and closed / time-change flags) without a Firestore sync</ion-card-subtitle>
+    </ion-card-header>
+
+    <ion-card-content>
+      <ion-item>
+        <ion-checkbox [(ngModel)]="regenRefreshQHc"></ion-checkbox>
+        <ion-label class="ion-margin-start">Also refresh Q/HC from the F3 calendar (~4 min)</ion-label>
+      </ion-item>
+
+      <ion-button
+        (click)="regenerateJsonCache()"
+        [disabled]="regenLoading"
+        expand="block"
+        class="ion-margin-top">
+        <ion-spinner name="crescent" *ngIf="regenLoading"></ion-spinner>
+        <span *ngIf="!regenLoading">Regenerate Cache</span>
+      </ion-button>
+
+      <div *ngIf="regenResults" class="results ion-margin-top">
+        <ion-text [color]="regenError ? 'danger' : 'success'">
+          <pre>{{ regenResults | json }}</pre>
+        </ion-text>
+      </div>
+    </ion-card-content>
+  </ion-card>
+
   <!-- Webhook Re-run Section -->
   <ion-card>
     <ion-card-header>

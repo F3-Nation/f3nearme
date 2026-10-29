@@ -2165,7 +2165,9 @@ export const scheduledBoiseQHcSync = functions
 /**
  * Callable function to manually trigger full sync
  */
-export const adminSyncAllBeatdowns = functions.https.onCall(async (data) => {
+export const adminSyncAllBeatdowns = functions
+  .runWith({ timeoutSeconds: 540 }) // the full sync outlasts the 60s default
+  .https.onCall(async (data) => {
   const dryRun = data?.dryRun === true;
   const startTime = Date.now();
   console.log(`[ADMIN] Sync all beatdowns callable request${dryRun ? ' (DRY RUN)' : ''}`);

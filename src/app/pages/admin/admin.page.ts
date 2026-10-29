@@ -28,6 +28,11 @@ export class AdminPage implements OnInit {
   fullSyncResults: any = null;
   fullSyncError: boolean = false;
 
+  regenRefreshQHc: boolean = false;
+  regenLoading: boolean = false;
+  regenResults: any = null;
+  regenError: boolean = false;
+
   webhookAfterDate: string = '';
   webhookDryRun: boolean = false;
   webhookLoading: boolean = false;
@@ -59,7 +64,8 @@ export class AdminPage implements OnInit {
     this.fullSyncResults = null;
 
     try {
-      const callable = this.fns.httpsCallable('adminSyncAllBeatdowns');
+      // wait as long as the function may run (540s), not the 70s default
+      const callable = this.fns.httpsCallable('adminSyncAllBeatdowns', { timeout: 540000 });
       const response = await callable({ dryRun: this.fullSyncDryRun }).toPromise();
       this.fullSyncResults = response;
       this.fullSyncError = false;
@@ -68,6 +74,24 @@ export class AdminPage implements OnInit {
       this.fullSyncError = true;
     } finally {
       this.fullSyncLoading = false;
+    }
+  }
+
+  async regenerateJsonCache() {
+    this.regenLoading = true;
+    this.regenError = false;
+    this.regenResults = null;
+
+    try {
+      const callable = this.fns.httpsCallable('adminRegenerateJsonCache', { timeout: 540000 });
+      const response = await callable({ refreshQHc: this.regenRefreshQHc }).toPromise();
+      this.regenResults = response;
+      this.regenError = false;
+    } catch (error) {
+      this.regenResults = error;
+      this.regenError = true;
+    } finally {
+      this.regenLoading = false;
     }
   }
 
