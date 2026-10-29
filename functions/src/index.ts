@@ -112,6 +112,8 @@ interface Beatdown {
   nextDate?: string;
   nextQ?: string;
   hcCount?: number;
+  // Closed / different-time occurrences, keyed by date (all.json only)
+  exceptions?: Record<string, InstanceException>;
   lastUpdated?: admin.firestore.FieldValue | admin.firestore.Timestamp | Date;
   deleted?: boolean;
   deletedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp | Date;
@@ -1144,6 +1146,7 @@ interface CalendarScheduleEvent {
   startDate: string;     // YYYY-MM-DD, region-local
   startTime: string | null;
   plannedQs: string | string[] | null;
+  seriesException?: string | null;
 }
 
 interface QHcInfo {
@@ -1203,6 +1206,8 @@ async function buildQHcEnrichment(): Promise<Record<string, QHcInfo>> {
   const bySeries = new Map<number, CalendarScheduleEvent>();
   for (const ev of regionEvents.flat()) {
     if (!ev.seriesId || !ev.startDate) continue;
+    // A closed occurrence isn't the next workout; the one after it is
+    if (ev.seriesException === 'closed') continue;
     const current = bySeries.get(ev.seriesId);
     const evKey = `${ev.startDate} ${ev.startTime ?? ''}`;
     if (!current || evKey < `${current.startDate} ${current.startTime ?? ''}`) {
@@ -1277,6 +1282,57 @@ async function getQHcEnrichment(refresh: boolean): Promise<Record<string, QHcInf
     gzip: true,
   });
   return series;
+}
+
+// ---------------------------------------------------------------------------
+// Per-date instance exceptions
+//
+// Regions can close a single occurrence of a series or move it to another
+// time without touching the series itself. upcoming-instances returns the
+// next 30 days of those exceptions (plus one-offs, which we ignore) in a
+// single call, so every cache regeneration fetches it fresh. Only `closed`
+// and `different-time` are surfaced; `miscellaneous` has no visible change.
+// ---------------------------------------------------------------------------
+
+interface InstanceException {
+  status: 'closed' | 'different-time';
+  timeString?: string; // the overridden time, different-time only
+}
+
+interface UpcomingInstance {
+  seriesId: number | null;
+  startDate: string;     // YYYY-MM-DD, region-local
+  startTime: string | null;
+  endTime: string | null;
+  seriesException: string | null;
+}
+
+/**
+ * Build a map of eventId (series) -> date -> exception from the API.
+ */
+async function fetchInstanceExceptions(): Promise<Map<number, Record<string, InstanceException>>> {
+  const instances: UpcomingInstance[] =
+    await fetchWithRetry(`${API_BASE_URL}/v1/map/location/upcoming-instances`);
+
+  const bySeries = new Map<number, Record<string, InstanceException>>();
+  for (const inst of instances) {
+    if (!inst.seriesId || !inst.startDate) continue;
+    let exception: InstanceException;
+    if (inst.seriesException === 'closed') {
+      exception = { status: 'closed' };
+    } else if (inst.seriesException === 'different-time' && inst.startTime) {
+      exception = {
+        status: 'different-time',
+        timeString: `${formatTime(inst.startTime)} - ${formatTime(inst.endTime)}`,
+      };
+    } else {
+      continue;
+    }
+    const dates = bySeries.get(inst.seriesId) ?? {};
+    dates[inst.startDate] = exception;
+    bySeries.set(inst.seriesId, dates);
+  }
+  return bySeries;
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,6 +1724,21 @@ async function generateJsonCache(options: { refreshQHc?: boolean } = {}): Promis
       console.log(`[QHC] Enriched ${enriched} beatdowns with next Q / HC info`);
     } catch (qhcError) {
       console.error(`[QHC] Enrichment failed; publishing without Q/HC badges:`, qhcError);
+    }
+
+    try {
+      const exceptions = await fetchInstanceExceptions();
+      let flagged = 0;
+      for (const bd of beatdowns) {
+        const dates = exceptions.get(bd.eventId);
+        if (dates) {
+          bd.exceptions = dates;
+          flagged++;
+        }
+      }
+      console.log(`[Exceptions] Flagged ${flagged} beatdowns with closed / different-time dates`);
+    } catch (exceptionsError) {
+      console.error(`[Exceptions] Fetch failed; publishing without closed / time-change flags:`, exceptionsError);
     }
 
     try {

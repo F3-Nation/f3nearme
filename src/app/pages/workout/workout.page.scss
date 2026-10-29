@@ -40,6 +40,31 @@
     }
   }
 
+  // Match the nearby cards: red for closed, burnt orange for a time change
+  .exception {
+    --time-change-color: #c2410c;
+    @media (prefers-color-scheme: dark) {
+      --time-change-color: #fb923c;
+    }
+
+    ion-icon,
+    h2 {
+      color: var(--time-change-color);
+      font-weight: 700;
+    }
+    .changed-time {
+      font-weight: 700;
+      color: var(--time-change-color);
+    }
+
+    &.closed {
+      ion-icon,
+      h2 {
+        color: var(--ion-color-danger);
+      }
+    }
+  }
+
   ion-button {
     margin: 8px 16px;
   }

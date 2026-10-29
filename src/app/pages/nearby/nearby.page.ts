@@ -2,6 +2,7 @@ import {Component} from '@angular/core';
 import {ActionSheetController, Platform} from '@ionic/angular';
 import {openDirections} from 'src/app/util/external-links';
 import {BeatdownService} from '../../services/beatdown.service';
+import {inExceptionWindow, startMinutes} from 'src/app/util/exceptions';
 
 export interface Beatdown {
   id: string;
@@ -21,9 +22,17 @@ export interface Beatdown {
   nextDate?: string;
   nextQ?: string;
   hcCount?: number;
+  // Occurrences the region closed or moved to another time, keyed by date
+  // (YYYY-MM-DD) — only the next 30 days, only when there's an exception
+  exceptions?: Record<string, InstanceException>;
   lastUpdated?: Date;
   deleted?: boolean;
   deletedAt?: Date;
+}
+
+export interface InstanceException {
+  status: 'closed' | 'different-time';
+  timeString?: string;  // the overridden time, different-time only
 }
 
 interface Day {
@@ -31,6 +40,7 @@ interface Day {
   dateDisplay: string;    // Today, Tomorrow, Wednesday, Monday July 12, etc
   dateISO: string;        // YYYY-MM-DD, to match against Beatdown.nextDate
   beatdowns: Beatdown[];  // the beatdowns ordered by distance from you
+  showExceptions: boolean;  // within the first week, where exceptions apply
 }
 
 interface Coords {
@@ -292,13 +302,7 @@ export class NearbyPage {
     if (this.userLocation) {
       nearby.sort((a, b) => a.milesFromMe - b.milesFromMe);
     } else {
-      nearby.sort((a, b) => {
-        // First compare by time
-        const timeCompare = a.timeString.localeCompare(b.timeString);
-        if (timeCompare !== 0) return timeCompare;
-        // If times are equal, sort alphabetically by name
-        return a.name.localeCompare(b.name);
-      });
+      nearby.sort((a, b) => this.compareByTime(a, b));
     }
 
     nearby.forEach(bd => {
@@ -336,18 +340,44 @@ export class NearbyPage {
     for (let i = daysFromToday; i < daysFromToday + 7; i++) {
       // add on todayDay to ensure we're picking the correct day to display
       const dayOfWeek = DAYS[(todayDay + i) % 7];
-      const beatdowns = this.nearbyMap.get(dayOfWeek) ?? [];
+      let beatdowns = this.nearbyMap.get(dayOfWeek) ?? [];
 
       // only build up days that have beatdowns
       if (beatdowns.length > 0) {
         const dateDisplay = this.getDateDisplay(today, i);
         const dateISO = this.toLocalISO(this.addDays(today, i));
-        this.days.push({daysFromToday: i, dateDisplay, dateISO, beatdowns});
+        const showExceptions = inExceptionWindow(i, today);
+
+        // a time change moves that day's card to its new slot (distance
+        // ordering doesn't care about time)
+        if (showExceptions && !this.userLocation &&
+            beatdowns.some(bd => bd.exceptions?.[dateISO]?.status === 'different-time')) {
+          beatdowns = [...beatdowns].sort((a, b) => this.compareByTime(a, b, dateISO));
+        }
+
+        this.days.push({daysFromToday: i, dateDisplay, dateISO, beatdowns, showExceptions});
       }
     }
 
     // if this was an ionic scroll event, complete it
     if (ionicScrollEvent) ionicScrollEvent.target.complete();
+  }
+
+  /**
+   * The exception to show for a beatdown on a day, if any
+   */
+  exceptionFor(bd: Beatdown, day: Day): InstanceException | undefined {
+    return day.showExceptions ? bd.exceptions?.[day.dateISO] : undefined;
+  }
+
+  /**
+   * Order by start time, then alphabetically by name. Given a date, a
+   * time change on that date counts instead of the usual time.
+   */
+  compareByTime(a: Beatdown, b: Beatdown, dateISO?: string): number {
+    const time = (bd: Beatdown) => startMinutes(
+        (dateISO && bd.exceptions?.[dateISO]?.timeString) || bd.timeString);
+    return time(a) - time(b) || a.name.localeCompare(b.name);
   }
 
   /**
