@@ -1,38 +1,21 @@
 /**
  * Per-date instance exceptions from the F3 calendar: an occurrence the region
- * closed, or moved to another time. Near me renders each series' weekly
- * pattern, and only corrects the first week of it — the same 7 days the
- * schedule loads up front — so both pages share this window.
+ * closed, or moved to another time. The sync only fetches the next 30 days of
+ * them, so days the schedule shows past that render as the usual pattern.
  */
 import type {Beatdown, InstanceException} from '../pages/nearby/nearby.page';
 
-export const EXCEPTION_WINDOW_DAYS = 7;
-
-/** The first day offset the schedule shows: past noon, today's workouts are over */
-export function firstScheduleDay(now: Date): number {
-  return now.getHours() >= 12 ? 1 : 0;
-}
-
-/** Whether a day this many days from today gets its exceptions applied */
-export function inExceptionWindow(daysFromToday: number, now: Date): boolean {
-  const first = firstScheduleDay(now);
-  return daysFromToday >= first && daysFromToday < first + EXCEPTION_WINDOW_DAYS;
-}
-
-/** A beatdown's exceptions within the window, soonest first */
+/** A beatdown's exceptions that haven't passed yet, soonest first */
 export function upcomingExceptions(bd: Beatdown, now: Date):
     Array<{dateISO: string; exception: InstanceException}> {
-  if (!bd.exceptions) return [];
-  const first = firstScheduleDay(now);
-  const upcoming = [];
-  for (let i = first; i < first + EXCEPTION_WINDOW_DAYS; i++) {
-    const date = new Date(now);
-    date.setDate(date.getDate() + i);
-    const dateISO = toLocalISO(date);
-    const exception = bd.exceptions[dateISO];
-    if (exception) upcoming.push({dateISO, exception});
-  }
-  return upcoming;
+  // past noon, today's workouts are over (the schedule drops today too)
+  const first = new Date(now);
+  if (now.getHours() >= 12) first.setDate(first.getDate() + 1);
+  const firstISO = toLocalISO(first);
+  return Object.entries(bd.exceptions ?? {})
+      .filter(([dateISO]) => dateISO >= firstISO)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dateISO, exception]) => ({dateISO, exception}));
 }
 
 /**
