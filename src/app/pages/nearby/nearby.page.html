@@ -95,7 +95,10 @@
         {{ day.dateDisplay }}
       </h2>
       <div class="bd-cards-container">
-        <ion-card class="bd-card" *ngFor="let bd of day.beatdowns" [class.has-link]="bd.website" [routerLink]="['/workout', bd.id]">
+        <ion-card class="bd-card" *ngFor="let bd of day.beatdowns" [class.has-link]="bd.website" [class.closed]="exceptionFor(bd, day)?.status === 'closed'" [routerLink]="['/workout', bd.id]">
+          <!-- this occurrence was closed by the region -->
+          <div class="closed-stamp" *ngIf="exceptionFor(bd, day)?.status === 'closed'">Closed this day</div>
+
           <!-- website link -->
           <ion-button class="website-link" fill="clear" [href]="bd.website" target="_blank" *ngIf="bd.website" (click)="$event.stopPropagation()">
             <ion-icon name="open-outline" slot="icon-only"></ion-icon>
@@ -106,11 +109,14 @@
             <ion-card-subtitle>
               <ng-container *ngIf="userLocation">
                 <ion-text color="dark">{{ bd.milesFromMe | number:'1.1-1' }} mi</ion-text>
-                • {{ bd.timeString }}
+                •
               </ng-container>
-              <ng-container *ngIf="!userLocation">
-                {{ bd.timeString }}
+              <ng-container *ngIf="exceptionFor(bd, day)?.status === 'different-time'; else usualTime">
+                <s class="usual-time">{{ bd.timeString }}</s>
+                <span class="changed-time">{{ exceptionFor(bd, day)?.timeString }}</span>
+                <ion-badge class="time-change-badge">Time change</ion-badge>
               </ng-container>
+              <ng-template #usualTime>{{ bd.timeString }}</ng-template>
             </ion-card-subtitle>
             <ion-card-title [innerHtml]="bd.name | highlight:filterText"></ion-card-title>
           </ion-card-header>
@@ -119,7 +125,7 @@
           <ion-card-content>
             <p *ngIf="showRegion"><b>Region:</b>&nbsp;<span [innerHtml]="bd.region | highlight:filterText"></span></p>
             <p><b>Type:</b>&nbsp;<span [innerHtml]="bd.type | highlight:filterText"></span></p>
-            <p class="q-hc-line" *ngIf="bd.nextDate === day.dateISO && (bd.nextQ || bd.hcCount)">
+            <p class="q-hc-line" *ngIf="bd.nextDate === day.dateISO && (bd.nextQ || bd.hcCount) && exceptionFor(bd, day)?.status !== 'closed'">
               <ng-container *ngIf="bd.nextQ"><b>Q:</b>&nbsp;{{ bd.nextQ }}</ng-container>
               <ion-badge class="hc-badge" *ngIf="bd.hcCount">{{ bd.hcCount }} HC{{ bd.hcCount === 1 ? '' : 's' }}</ion-badge>
             </p>

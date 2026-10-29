@@ -54,6 +54,20 @@
 
       <ion-card-content>
         <ion-list lines="none">
+          <ion-item class="exception" *ngFor="let ex of exceptions" [class.closed]="ex.exception.status === 'closed'">
+            <ion-icon [name]="ex.exception.status === 'closed' ? 'close-circle-outline' : 'time-outline'" slot="start"></ion-icon>
+            <ion-label class="ion-text-wrap">
+              <ng-container *ngIf="ex.exception.status === 'closed'">
+                <h2>{{ ex.label }}: Closed</h2>
+                <p>No workout this day</p>
+              </ng-container>
+              <ng-container *ngIf="ex.exception.status === 'different-time'">
+                <h2>{{ ex.label }}: Time change</h2>
+                <p><span class="changed-time">{{ ex.exception.timeString }}</span> instead of {{ workout.timeString }}</p>
+              </ng-container>
+            </ion-label>
+          </ion-item>
+
           <ion-item class="up-next" *ngIf="nextLabel && (workout.nextQ || workout.hcCount)">
             <ion-icon name="calendar-outline" slot="start"></ion-icon>
             <ion-label class="ion-text-wrap">

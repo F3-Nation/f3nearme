@@ -1,7 +1,8 @@
 import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { BeatdownService } from '../../services/beatdown.service';
-import { Beatdown } from '../nearby/nearby.page';
+import { Beatdown, InstanceException } from '../nearby/nearby.page';
+import { upcomingExceptions } from 'src/app/util/exceptions';
 import { ToastController } from '@ionic/angular';
 import { directionsWebUrl, openDirections, openPlace, openWebsite } from 'src/app/util/external-links';
 
@@ -20,6 +21,8 @@ export class WorkoutPage implements OnInit {
   canShare = false;
   /** "Today", "Tomorrow" or "Thursday, Oct 9" for the Q/HC info, or '' once it is stale */
   nextLabel = '';
+  /** Closed or time-changed occurrences in the coming week, labeled like nextLabel */
+  exceptions: Array<{label: string; exception: InstanceException}> = [];
 
   constructor(
     private route: ActivatedRoute,
@@ -70,6 +73,12 @@ export class WorkoutPage implements OnInit {
         }
         this.workout = workout;
         this.nextLabel = this.getNextLabel(workout.nextDate);
+        // no Q/HC line for an occurrence that isn't happening
+        if (workout.nextDate && workout.exceptions?.[workout.nextDate]?.status === 'closed') {
+          this.nextLabel = '';
+        }
+        this.exceptions = upcomingExceptions(workout, new Date())
+          .map(({dateISO, exception}) => ({label: this.getNextLabel(dateISO), exception}));
         this.mapEmbedUrl = `https://maps.google.com/maps?q=${workout.lat},${workout.long}&t=m&z=16&output=embed`;
         this.directionsUrl = directionsWebUrl(workout.lat, workout.long);
         this.loadRelatedWorkouts();

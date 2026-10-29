@@ -31,6 +31,55 @@
     --color: #121212;
   }
 
+  // a one-off time change: strike the usual time, call out the new one in a
+  // burnt orange that can't be mistaken for the yellow HC badge
+  --time-change-color: #c2410c;
+  @media (prefers-color-scheme: dark) {
+    --time-change-color: #fb923c;
+  }
+  .usual-time {
+    opacity: 0.7;
+    white-space: nowrap;
+  }
+  .changed-time {
+    margin-left: 4px;
+    font-weight: 700;
+    white-space: nowrap;
+    color: var(--time-change-color);
+  }
+  .time-change-badge {
+    margin-left: 6px;
+    vertical-align: middle;
+    --background: var(--time-change-color);
+    --color: var(--ion-background-color, #fff);
+  }
+
+  // the region closed this occurrence: fade the card, stamp it
+  &.closed {
+    ion-card-header,
+    ion-card-content {
+      opacity: 0.45;
+      filter: grayscale(1);
+    }
+  }
+  .closed-stamp {
+    position: absolute;
+    z-index: 98;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-12deg);
+    padding: 4px 14px;
+    border: 3px solid var(--ion-color-danger);
+    border-radius: 6px;
+    color: var(--ion-color-danger);
+    font-size: 1.3rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
   // position the icon in the top right of the card
   .website-link {
     position: absolute;
