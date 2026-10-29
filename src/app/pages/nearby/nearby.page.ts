@@ -2,7 +2,7 @@ import {Component} from '@angular/core';
 import {ActionSheetController, Platform} from '@ionic/angular';
 import {openDirections} from 'src/app/util/external-links';
 import {BeatdownService} from '../../services/beatdown.service';
-import {inExceptionWindow, startMinutes} from 'src/app/util/exceptions';
+import {startMinutes} from 'src/app/util/exceptions';
 
 export interface Beatdown {
   id: string;
@@ -40,7 +40,6 @@ interface Day {
   dateDisplay: string;    // Today, Tomorrow, Wednesday, Monday July 12, etc
   dateISO: string;        // YYYY-MM-DD, to match against Beatdown.nextDate
   beatdowns: Beatdown[];  // the beatdowns ordered by distance from you
-  showExceptions: boolean;  // within the first week, where exceptions apply
 }
 
 interface Coords {
@@ -346,16 +345,14 @@ export class NearbyPage {
       if (beatdowns.length > 0) {
         const dateDisplay = this.getDateDisplay(today, i);
         const dateISO = this.toLocalISO(this.addDays(today, i));
-        const showExceptions = inExceptionWindow(i, today);
-
         // a time change moves that day's card to its new slot (distance
         // ordering doesn't care about time)
-        if (showExceptions && !this.userLocation &&
+        if (!this.userLocation &&
             beatdowns.some(bd => bd.exceptions?.[dateISO]?.status === 'different-time')) {
           beatdowns = [...beatdowns].sort((a, b) => this.compareByTime(a, b, dateISO));
         }
 
-        this.days.push({daysFromToday: i, dateDisplay, dateISO, beatdowns, showExceptions});
+        this.days.push({daysFromToday: i, dateDisplay, dateISO, beatdowns});
       }
     }
 
@@ -367,7 +364,7 @@ export class NearbyPage {
    * The exception to show for a beatdown on a day, if any
    */
   exceptionFor(bd: Beatdown, day: Day): InstanceException | undefined {
-    return day.showExceptions ? bd.exceptions?.[day.dateISO] : undefined;
+    return bd.exceptions?.[day.dateISO];
   }
 
   /**

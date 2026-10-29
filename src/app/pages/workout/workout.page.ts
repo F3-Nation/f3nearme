@@ -21,7 +21,7 @@ export class WorkoutPage implements OnInit {
   canShare = false;
   /** "Today", "Tomorrow" or "Thursday, Oct 9" for the Q/HC info, or '' once it is stale */
   nextLabel = '';
-  /** Closed or time-changed occurrences in the coming week, labeled like nextLabel */
+  /** Upcoming closed or time-changed occurrences (next 30 days), labeled like nextLabel */
   exceptions: Array<{label: string; exception: InstanceException}> = [];
 
   constructor(
