@@ -7,12 +7,16 @@ import firebase from 'firebase/compat/app';
 import 'firebase/compat/firestore';
 import { environment } from '../../environments/environment';
 
+/** How long one download of all.json is reused before fetching again */
+const ALL_JSON_TTL_MS = 5 * 60 * 1000;
+
 @Injectable({
   providedIn: 'root'
 })
 export class BeatdownService {
   private dataUrl = environment.dataUrl;
   private useJsonCache = true; // Serve from the CDN JSON cache; Firestore is only an emergency fallback
+  private allCache: { at: number; data: Promise<Array<Beatdown & { id: string }>> } | null = null;
 
   constructor(private readonly afs: AngularFirestore) {}
 
@@ -35,6 +39,25 @@ export class BeatdownService {
   }
 
   /**
+   * all.json, shared by every caller for a few minutes. The nearby list, the
+   * trip planner and the workout page all need the same file, so one
+   * download (the CDN already serves it with a 5-minute TTL) covers them.
+   */
+  private fetchAll(): Observable<Array<Beatdown & { id: string }>> {
+    const now = Date.now();
+    if (!this.allCache || now - this.allCache.at > ALL_JSON_TTL_MS) {
+      const data = this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').toPromise();
+      const entry = { at: now, data };
+      this.allCache = entry;
+      // a failed download must not be served from cache
+      data.catch(() => {
+        if (this.allCache === entry) this.allCache = null;
+      });
+    }
+    return from(this.allCache.data);
+  }
+
+  /**
    * Get beatdowns from JSON cache or Firestore fallback
    * If location parameters are provided, filters to beatdowns within the radius
    * Otherwise returns all beatdowns
@@ -45,7 +68,7 @@ export class BeatdownService {
    */
   getNearbyBeatdowns(lat?: number, lng?: number, radiusMiles: number = 100): Observable<Beatdown[]> {
     if (this.useJsonCache) {
-      return this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').pipe(
+      return this.fetchAll().pipe(
         map(beatdowns => {
           // Filter out deleted items (shouldn't be in JSON, but just in case)
           const activeBeatdowns = beatdowns.filter(bd => !bd.deleted);
@@ -92,7 +115,7 @@ export class BeatdownService {
    */
   getBeatdown(id: string): Observable<Beatdown | null> {
     if (this.useJsonCache) {
-      return this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').pipe(
+      return this.fetchAll().pipe(
         map(beatdowns => {
           const beatdown = beatdowns.find(bd => bd.id === id);
           if (!beatdown || beatdown.deleted) {
@@ -134,7 +157,7 @@ export class BeatdownService {
    */
   getBeatdownsByLatLong(lat: number, long: number): Observable<Beatdown[]> {
     if (this.useJsonCache) {
-      return this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').pipe(
+      return this.fetchAll().pipe(
         map(beatdowns => {
           return beatdowns.filter(bd => 
             !bd.deleted && 
@@ -175,7 +198,7 @@ export class BeatdownService {
    */
   findBeatdownsByPartialId(partialId: string): Observable<Beatdown[]> {
     if (this.useJsonCache) {
-      return this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').pipe(
+      return this.fetchAll().pipe(
         map(beatdowns => {
           // Filter out deleted items and find IDs that contain the partial ID
           return beatdowns.filter(bd => !bd.deleted && bd.id.includes(partialId));
@@ -238,7 +261,7 @@ export class BeatdownService {
     if (lastSyncDate === null) {
       // First load: get all beatdowns from JSON cache
       if (this.useJsonCache) {
-        return this.fetchJsonData<Array<Beatdown & { id: string }>>('all.json').pipe(
+        return this.fetchAll().pipe(
           map(beatdowns => beatdowns.filter(bd => !bd.deleted)),
           catchError(error => {
             console.warn('Failed to fetch from JSON cache, falling back to Firestore:', error);

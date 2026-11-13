@@ -1,0 +1,179 @@
+<ion-header [translucent]="true">
+  <ion-toolbar>
+    <ion-title>Trips</ion-title>
+    <ion-buttons slot="end">
+      <ion-button (click)="addTrip()" [disabled]="!allBDs" aria-label="Add a trip">
+        <ion-icon slot="icon-only" name="add"></ion-icon>
+      </ion-button>
+    </ion-buttons>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content [fullscreen]="true">
+  <ng-container *ngIf="allBDs; else loading">
+
+    <!-- nothing planned yet -->
+    <div class="empty-trips" *ngIf="!hasTrips">
+      <div class="art">
+        <ion-icon name="airplane-outline"></ion-icon>
+      </div>
+      <h2>Headed downrange?</h2>
+      <p>
+        Tell us where you'll be and when, and we'll line up the closest
+        F3 workouts for every day of your trip.
+      </p>
+      <ion-button (click)="addTrip()" shape="round" size="large">
+        <ion-icon slot="start" name="add-circle-outline"></ion-icon>
+        Plan a trip
+      </ion-button>
+      <p class="hint" *ngIf="(pushState$ | async) !== 'unsupported'">
+        <ion-icon name="notifications-outline"></ion-icon>
+        Once a trip is saved you can get a reminder at {{ reminderHour }} the
+        night before with tomorrow's closest workouts.
+      </p>
+    </div>
+
+    <ng-container *ngIf="hasTrips">
+      <!-- reminders -->
+      <ng-container *ngIf="pushState$ | async as pushState">
+        <div class="reminders" *ngIf="pushState !== 'unsupported'" [class.on]="pushState === 'on'">
+          <div class="reminders-icon">
+            <ion-icon [name]="pushState === 'on' ? 'notifications' : 'notifications-outline'"></ion-icon>
+          </div>
+          <div class="reminders-text">
+            <ng-container [ngSwitch]="pushState">
+              <ng-container *ngSwitchCase="'on'">
+                <h3>Reminders are on</h3>
+                <p>We'll ping you at {{ reminderHour }} the night before each trip day with the closest workouts.</p>
+                <button type="button" class="link" (click)="sendTest()" [disabled]="sendingTest">
+                  {{ sendingTest ? 'Sending…' : 'Send me a test' }}
+                </button>
+              </ng-container>
+              <ng-container *ngSwitchCase="'needs-install'">
+                <h3>Night-before reminders</h3>
+                <p>On iPhone, reminders need the installed app: tap Share, then <b>Add to Home Screen</b>, and turn them on from there.</p>
+              </ng-container>
+              <ng-container *ngSwitchCase="'denied'">
+                <h3>Notifications are blocked</h3>
+                <p>Allow notifications for F3 Near Me in your browser or phone settings, then come back to turn reminders on.</p>
+              </ng-container>
+              <ng-container *ngSwitchDefault>
+                <h3>Night-before reminders</h3>
+                <p>Get tomorrow's closest workouts at {{ reminderHour }} the evening before each trip day.</p>
+              </ng-container>
+            </ng-container>
+            <p class="error" *ngIf="pushError$ | async as pushError">{{ pushError }}</p>
+          </div>
+          <ion-spinner name="crescent" *ngIf="pushState === 'busy'"></ion-spinner>
+          <ion-toggle
+            *ngIf="pushState === 'on' || pushState === 'off' || pushState === 'denied'"
+            [checked]="pushState === 'on'"
+            [disabled]="pushState === 'denied'"
+            (ionChange)="toggleReminders($event)"
+            aria-label="Night-before reminders">
+          </ion-toggle>
+        </div>
+      </ng-container>
+
+      <!-- upcoming trips -->
+      <div class="trip-cards">
+        <ion-card class="trip-card" *ngFor="let view of views; trackBy: trackByTrip" [style.--accent]="view.accent">
+          <div class="trip-header">
+            <div class="stamp" aria-hidden="true">{{ view.initial }}</div>
+            <div class="trip-titles">
+              <h2>{{ view.trip.name }}</h2>
+              <p class="place">{{ view.trip.placeName }}</p>
+              <p class="meta">
+                <span><ion-icon name="calendar-outline"></ion-icon>{{ view.rangeLabel }}</span>
+                <span><ion-icon name="locate-outline"></ion-icon>within {{ view.radiusLabel }}</span>
+              </p>
+            </div>
+            <ion-button fill="clear" class="menu-button" (click)="tripMenu(view)" aria-label="Trip options">
+              <ion-icon slot="icon-only" name="ellipsis-horizontal"></ion-icon>
+            </ion-button>
+          </div>
+
+          <div class="trip-days">
+            <div class="trip-day" *ngFor="let day of view.days; trackBy: trackByDay">
+              <div class="day-header">
+                <h3>{{ day.label }}<span class="weekday" *ngIf="day.label === 'Today' || day.label === 'Tomorrow'"> · {{ day.weekday }}</span></h3>
+                <span class="count" *ngIf="day.beatdowns.length">{{ day.beatdowns.length }} workout{{ day.beatdowns.length === 1 ? '' : 's' }}</span>
+              </div>
+
+              <p class="none" *ngIf="day.beatdowns.length === 0">
+                No F3 workouts within {{ view.radiusLabel }} on {{ day.weekday }}s
+              </p>
+
+              <a class="bd-row" *ngFor="let tb of visibleBeatdowns(day)"
+                 [routerLink]="['/workout', tb.bd.id]"
+                 [class.closed]="tb.exception?.status === 'closed'">
+                <div class="bd-time">
+                  <span class="time" [class.changed]="tb.exception?.status === 'different-time'">{{ startTime(tb.timeString) }}</span>
+                  <span class="miles">{{ tb.miles | number:'1.1-1' }} mi</span>
+                </div>
+                <div class="bd-main">
+                  <div class="bd-name">
+                    {{ tb.bd.name }}
+                    <ion-badge class="closed-badge" *ngIf="tb.exception?.status === 'closed'">Closed</ion-badge>
+                    <ion-badge class="time-change-badge" *ngIf="tb.exception?.status === 'different-time'">Time change</ion-badge>
+                    <ion-badge class="hc-badge" *ngIf="tb.bd.nextDate === day.dateISO && tb.bd.hcCount && tb.exception?.status !== 'closed'">{{ tb.bd.hcCount }} HC{{ tb.bd.hcCount === 1 ? '' : 's' }}</ion-badge>
+                  </div>
+                  <div class="bd-detail">
+                    <span>{{ tb.timeString }}</span>
+                    <span> · {{ tb.bd.type }}</span>
+                    <span *ngIf="tb.bd.nextDate === day.dateISO && tb.bd.nextQ && tb.exception?.status !== 'closed'"> · Q: {{ tb.bd.nextQ }}</span>
+                  </div>
+                  <button type="button" class="bd-address" (click)="openDirections($event, tb.bd)">
+                    <ion-icon name="navigate-outline"></ion-icon>{{ tb.bd.address }}
+                  </button>
+                </div>
+                <ion-icon class="chevron" name="chevron-forward"></ion-icon>
+              </a>
+
+              <button type="button" class="more" *ngIf="hiddenCount(day) > 0" (click)="toggleDay(day)">
+                <ng-container *ngIf="!day.expanded">Show {{ hiddenCount(day) }} more<ion-icon name="chevron-down"></ion-icon></ng-container>
+                <ng-container *ngIf="day.expanded">Show fewer<ion-icon name="chevron-up"></ion-icon></ng-container>
+              </button>
+            </div>
+
+            <p class="none all-past" *ngIf="view.days.length === 0">
+              This trip's days have passed.
+            </p>
+          </div>
+        </ion-card>
+      </div>
+
+      <!-- past trips, tucked away -->
+      <div class="past-trips" *ngIf="pastViews.length">
+        <button type="button" class="past-toggle" (click)="showPast = !showPast">
+          <ion-icon [name]="showPast ? 'chevron-down' : 'chevron-forward'"></ion-icon>
+          Past trips ({{ pastViews.length }})
+        </button>
+        <ion-list *ngIf="showPast" lines="none">
+          <ion-item *ngFor="let view of pastViews; trackBy: trackByTrip" [style.--accent]="view.accent">
+            <div class="stamp small" slot="start" aria-hidden="true">{{ view.initial }}</div>
+            <ion-label class="ion-text-wrap">
+              <h2>{{ view.trip.name }}</h2>
+              <p>{{ view.rangeLabel }} · {{ view.trip.placeName }}</p>
+            </ion-label>
+            <ion-button fill="clear" slot="end" (click)="tripMenu(view)" aria-label="Trip options">
+              <ion-icon slot="icon-only" name="ellipsis-horizontal"></ion-icon>
+            </ion-button>
+          </ion-item>
+        </ion-list>
+      </div>
+
+      <p class="load-error" *ngIf="loadError">
+        <ion-icon name="cloud-offline-outline"></ion-icon>
+        Couldn't load workouts right now. Your trips are saved; pull to try again later.
+      </p>
+    </ng-container>
+  </ng-container>
+</ion-content>
+
+<!-- loading spinner -->
+<ng-template #loading>
+  <div class="spinner-container">
+    <ion-spinner></ion-spinner>
+  </div>
+</ng-template>

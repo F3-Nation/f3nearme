@@ -55,3 +55,8 @@
 ion-card.ios {
   margin: 16px;
 }
+// the floating tab pill overlaps the bottom of the tabbed pages, so give
+// their scrollable content room to clear it
+ion-tabs ion-content {
+  --padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+}

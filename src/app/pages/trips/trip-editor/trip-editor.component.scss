@@ -1,0 +1,150 @@
+.field {
+  padding: 16px 16px 4px;
+
+  & + .field {
+    padding-top: 8px;
+  }
+}
+
+.field-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ion-color-medium-shade);
+}
+
+ion-searchbar {
+  padding: 0;
+}
+
+.results {
+  margin: 4px 0 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+
+  ion-list-header {
+    min-height: 32px;
+    padding-left: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ion-color-medium);
+  }
+
+  ion-item {
+    --background: var(--ion-color-light);
+    margin-bottom: 4px;
+    border-radius: 12px;
+
+    h3 {
+      font-weight: 600;
+    }
+  }
+}
+
+.search-button {
+  margin: 10px 0 0;
+}
+
+.note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ion-color-medium-shade);
+
+  &.error {
+    color: var(--ion-color-danger);
+  }
+
+  &.credit {
+    font-size: 11px;
+    color: var(--ion-color-medium);
+  }
+}
+
+.chosen {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 6px 10px 12px;
+  border-radius: 12px;
+  background: rgba(var(--ion-color-primary-rgb), 0.08);
+
+  > ion-icon {
+    flex-shrink: 0;
+    font-size: 22px;
+  }
+
+  .chosen-text {
+    flex: 1;
+    min-width: 0;
+
+    h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    p {
+      margin: 2px 0 0;
+      font-size: 13px;
+      color: var(--ion-color-medium-shade);
+    }
+  }
+}
+
+.input-item {
+  --background: var(--ion-color-light);
+  --padding-start: 12px;
+  --inner-padding-end: 12px;
+  border-radius: 12px;
+}
+
+.dates {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .date {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--ion-color-light);
+  }
+
+  .date-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ion-color-medium-shade);
+  }
+
+  ion-datetime-button {
+    &::part(native) {
+      padding: 4px 0;
+      background: transparent;
+      font-weight: 700;
+    }
+  }
+
+  .arrow {
+    flex-shrink: 0;
+    color: var(--ion-color-medium);
+  }
+}
+
+ion-segment {
+  --background: var(--ion-color-light);
+}
+
+ion-footer ion-toolbar {
+  --padding-start: 16px;
+  --padding-end: 16px;
+  --padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+}

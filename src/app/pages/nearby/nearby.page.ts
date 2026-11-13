@@ -3,6 +3,7 @@ import {ActionSheetController, Platform} from '@ionic/angular';
 import {openDirections} from 'src/app/util/external-links';
 import {BeatdownService} from '../../services/beatdown.service';
 import {startMinutes} from 'src/app/util/exceptions';
+import {milesBetween} from 'src/app/util/geo';
 
 export interface Beatdown {
   id: string;
@@ -381,23 +382,7 @@ export class NearbyPage {
    * Get the distance in miles (as the crow flies) between two points
    */
   distance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    if ((lat1 == lat2) && (lon1 == lon2)) {
-      return 0;
-    } else {
-      var radlat1 = Math.PI * lat1 / 180;
-      var radlat2 = Math.PI * lat2 / 180;
-      var theta = lon1 - lon2;
-      var radtheta = Math.PI * theta / 180;
-      var dist = Math.sin(radlat1) * Math.sin(radlat2) +
-          Math.cos(radlat1) * Math.cos(radlat2) * Math.cos(radtheta);
-      if (dist > 1) {
-        dist = 1;
-      }
-      dist = Math.acos(dist);
-      dist = dist * 180 / Math.PI;
-      dist = dist * 60 * 1.1515;
-      return dist;
-    }
+    return milesBetween(lat1, lon1, lat2, lon2);
   }
 
   /**

@@ -1,0 +1,69 @@
+// A pill that floats above the page, centered, clear of the home indicator.
+// The page content pads its bottom (see global.scss) so nothing hides under it.
+.floating-tab-bar {
+  position: absolute;
+  z-index: 100;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: auto;
+  height: auto;
+  padding: 5px;
+  gap: 4px;
+  border-radius: 999px;
+  --border: 0;
+  --background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(18px);
+  -webkit-backdrop-filter: saturate(180%) blur(18px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  contain: none;
+
+  ion-tab-button {
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 7px;
+    min-width: 0;
+    height: 44px;
+    padding: 0 18px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    --background-focused: transparent;
+    --ripple-color: transparent;
+    --color: var(--ion-color-medium-shade);
+    --color-selected: #fff;
+    --padding-start: 0;
+    --padding-end: 0;
+    transition: background-color 180ms ease, color 180ms ease;
+
+    ion-icon {
+      font-size: 16px;
+      // the icon and label are slotted into the button's shadow DOM, so the
+      // breathing room between them lives on the icon itself
+      margin: 0 9px 0 0;
+    }
+
+    ion-label {
+      margin: 0;
+      font-size: inherit;
+      font-weight: inherit;
+    }
+
+    &.tab-selected {
+      background: var(--ion-color-primary);
+      box-shadow: 0 4px 12px rgba(var(--ion-color-primary-rgb), 0.35);
+    }
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .floating-tab-bar {
+    --background: rgba(36, 36, 40, 0.82);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+
+    ion-tab-button {
+      --color: var(--ion-color-medium-tint);
+    }
+  }
+}
