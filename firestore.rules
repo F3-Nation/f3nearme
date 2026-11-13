@@ -26,7 +26,8 @@ service cloud.firestore {
   function validSubscription(d) {
     return d.subscription is map
         && d.subscription.endpoint is string
-        && d.subscription.endpoint.matches('https://.{10,2000}')
+        && d.subscription.endpoint.matches('https://.*')
+        && d.subscription.endpoint.size() >= 10 && d.subscription.endpoint.size() <= 2000
         && d.subscription.keys is map
         && d.subscription.keys.p256dh is string && d.subscription.keys.p256dh.size() <= 200
         && d.subscription.keys.auth is string && d.subscription.keys.auth.size() <= 100
