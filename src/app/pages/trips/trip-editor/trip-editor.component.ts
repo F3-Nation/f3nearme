@@ -4,7 +4,7 @@ import {DEFAULT_TRIP_RADIUS, MAX_TRIP_DAYS, Trip, TRIP_RADIUS_OPTIONS} from 'src
 import {GeocodeResult, GeocodingService} from 'src/app/services/geocoding.service';
 import {TripsService} from 'src/app/services/trips.service';
 import {CityOption} from 'src/app/util/cities';
-import {addDays, eachDay, parseLocalISO, todayISO, toLocalISO} from 'src/app/util/dates';
+import {addDays, eachDay, todayISO, toLocalISO} from 'src/app/util/dates';
 
 /** How many F3 cities to suggest while typing */
 const CITY_SUGGESTIONS = 5;
@@ -25,6 +25,7 @@ export class TripEditorComponent implements OnInit {
   @Input() cities: CityOption[] = [];
 
   readonly radiusOptions = TRIP_RADIUS_OPTIONS;
+  readonly maxTripDays = MAX_TRIP_DAYS;
   readonly minDate = todayISO();
   readonly maxDate = toLocalISO(addDays(new Date(), 366));
 
@@ -137,18 +138,23 @@ export class TripEditorComponent implements OnInit {
     this.searched = false;
   }
 
+  /** Native date inputs: the OS picker on phones, a clearable field on desktop */
   onStartChange(event: Event) {
-    this.startDate = isoDate((event as CustomEvent).detail?.value) || this.startDate;
-    if (this.endDate < this.startDate) {this.endDate = this.startDate;}
+    const input = event.target as HTMLInputElement;
+    this.startDate = isoDate(input.value) || this.startDate;
+    input.value = this.startDate;
+    if (this.endDate < this.startDate) {
+      this.endDate = this.startDate;
+    }
   }
 
   onEndChange(event: Event) {
-    this.endDate = isoDate((event as CustomEvent).detail?.value) || this.endDate;
-    if (this.endDate < this.startDate) {this.startDate = this.endDate;}
-  }
-
-  prettyDate(iso: string): string {
-    return parseLocalISO(iso).toLocaleDateString(undefined, {weekday: 'short', month: 'short', day: 'numeric'});
+    const input = event.target as HTMLInputElement;
+    this.endDate = isoDate(input.value) || this.endDate;
+    input.value = this.endDate;
+    if (this.endDate < this.startDate) {
+      this.startDate = this.endDate;
+    }
   }
 
   cancel() {
@@ -180,8 +186,7 @@ export class TripEditorComponent implements OnInit {
   }
 }
 
-/** ion-datetime hands back ISO strings; keep only the date part */
+/** Only a complete YYYY-MM-DD counts; a cleared field keeps the previous date */
 function isoDate(value: unknown): string {
-  const text = Array.isArray(value) ? value[0] : value;
-  return typeof text === 'string' ? text.slice(0, 10) : '';
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
 }

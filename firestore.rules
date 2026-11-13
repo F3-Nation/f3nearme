@@ -1,18 +1,38 @@
 rules_version = '2';
-// PHASE 2 RULES — DO NOT DEPLOY BEFORE ~2026-09-15.
+// Everything is denied by default: the app reads workout data from the CDN
+// JSON cache (all.json), and this lockdown is what cut off the scraper that
+// was dumping the public beatdowns collection (2026-09).
 //
-// The app now serves all workout data from the CDN JSON cache
-// (https://storage.googleapis.com/f3-workout.appspot.com/data/all.json).
-// Direct Firestore reads are only used by stale PWA bundles from before
-// 2026-09-08. Once those have rolled over (~1 week), replace firestore.rules
-// with this file and run:  firebase deploy --only firestore:rules
-//
-// This shuts off the external scraper that has been dumping the public
-// beatdowns collection ~once per minute since 2026-09-01 (~13M reads/day).
+// The one exception is push subscriptions for trip reminders. A device
+// writes its own doc, whose id is the sha256 of its push endpoint, so docs
+// can't be enumerated and only the device that owns an endpoint can land on
+// its id. Listing stays off; a single get by id is allowed so the app can
+// read back the result of a test push.
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /pushSubscriptions/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if id == hashing.sha256(request.resource.data.subscription.endpoint).toHexString().lower()
+                             && validSubscription(request.resource.data);
+      allow delete: if true;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
+  }
+
+  function validSubscription(d) {
+    return d.subscription is map
+        && d.subscription.endpoint is string
+        && d.subscription.endpoint.matches('https://.{10,2000}')
+        && d.subscription.keys is map
+        && d.subscription.keys.p256dh is string && d.subscription.keys.p256dh.size() <= 200
+        && d.subscription.keys.auth is string && d.subscription.keys.auth.size() <= 100
+        && d.timezone is string && d.timezone.size() <= 64
+        && d.trips is list && d.trips.size() <= 20
+        && d.keys().hasOnly(['subscription', 'timezone', 'trips', 'updatedAt', 'testRequestedAt',
+                              'lastReminderFor', 'lastReminderAt', 'testResult']);
   }
 }

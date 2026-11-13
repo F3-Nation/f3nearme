@@ -11,7 +11,6 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { Request, Response } from 'express';
 import { Storage } from '@google-cloud/storage';
 import * as webpush from 'web-push';
-import { createHash } from 'crypto';
 
 interface MapWebhook {
   action: 'map.updated'|'map.deleted';
@@ -2247,13 +2246,15 @@ if (process.env.FUNCTIONS_EMULATOR === 'true') {
 // Trip reminders (web push)
 //
 // The app saves a user's downrange trips on the device. When they turn on
-// reminders, it registers the browser's push subscription here along with
-// the trips and the device timezone. Every 15 minutes the scheduler looks
-// for devices where it's 8pm local time and tomorrow falls inside a trip,
-// and pushes the closest workouts for tomorrow. Payloads are shaped for the
-// Angular service worker, which shows the notification and opens /trips on
-// tap. Firestore rules deny all client access, so these callables are the
-// only way in and out of the collection.
+// reminders, it writes the browser's push subscription, the trips and the
+// device timezone straight into pushSubscriptions/{sha256(endpoint)} — the
+// Firestore rules validate the shape and pin the id to the endpoint, and
+// nothing in the collection is listable. Every 15 minutes the scheduler
+// looks for devices where it's 8pm local time and tomorrow falls inside a
+// trip, and pushes the closest workouts for tomorrow. Stamping a doc with
+// testRequestedAt fires a trigger that sends a sample right away and writes
+// back how it went. Payloads are shaped for the Angular service worker,
+// which shows the notification and opens /trips on tap.
 // ============================================================================
 
 const PUSH_COLLECTION = 'pushSubscriptions';
@@ -2279,11 +2280,13 @@ interface PushSubscriptionDoc {
   subscription: { endpoint: string; keys: { p256dh: string; auth: string } };
   timezone: string;
   trips: ReminderTrip[];
-  createdAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
   updatedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
   /** The trip day the last reminder covered, so a day is only sent once */
   lastReminderFor?: string;
   lastReminderAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+  /** Client stamp (ms since epoch) asking for a sample push */
+  testRequestedAt?: number;
+  testResult?: { requestedAt: number; ok: boolean; message: string };
 }
 
 interface ReminderWorkout {
@@ -2299,7 +2302,7 @@ function vapidConfigured(): boolean {
 
 function configureWebPush(): void {
   if (!vapidConfigured()) {
-    throw new functions.https.HttpsError('failed-precondition', 'Push notifications are not configured on the server');
+    throw new Error('Push notifications are not configured on the server (VAPID keys missing)');
   }
   webpush.setVapidDetails(
     process.env.VAPID_SUBJECT || 'mailto:taylor.matt777@gmail.com',
@@ -2308,25 +2311,28 @@ function configureWebPush(): void {
   );
 }
 
-/** Endpoints are long unguessable URLs; hash them into a stable doc id */
-function subscriptionDocId(endpoint: string): string {
-  return createHash('sha256').update(endpoint).digest('hex');
-}
-
 function isISODate(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value));
 }
 
-function validateSubscription(input: any): PushSubscriptionDoc['subscription'] {
-  const endpoint = input?.endpoint;
-  const p256dh = input?.keys?.p256dh;
-  const auth = input?.keys?.auth;
+/** The rules already validate writes; this guards the scheduler against anything older or odd */
+function parseSubscriptionDoc(input: any): PushSubscriptionDoc | null {
+  const endpoint = input?.subscription?.endpoint;
+  const p256dh = input?.subscription?.keys?.p256dh;
+  const auth = input?.subscription?.keys?.auth;
   if (typeof endpoint !== 'string' || !/^https:\/\/.{10,2000}$/.test(endpoint) ||
       typeof p256dh !== 'string' || p256dh.length > 200 ||
       typeof auth !== 'string' || auth.length > 100) {
-    throw new functions.https.HttpsError('invalid-argument', 'A valid push subscription is required');
+    return null;
   }
-  return { endpoint, keys: { p256dh, auth } };
+  return {
+    subscription: { endpoint, keys: { p256dh, auth } },
+    timezone: validateTimezone(input?.timezone),
+    trips: validateTrips(input?.trips),
+    lastReminderFor: typeof input?.lastReminderFor === 'string' ? input.lastReminderFor : undefined,
+    testRequestedAt: typeof input?.testRequestedAt === 'number' ? input.testRequestedAt : undefined,
+    testResult: input?.testResult,
+  };
 }
 
 function validateTimezone(input: unknown): string {
@@ -2462,89 +2468,66 @@ async function sendPush(docRef: admin.firestore.DocumentReference, doc: PushSubs
   }
 }
 
-/** Register (or refresh) a device's subscription, trips and timezone */
-export const savePushSubscription = functions.https.onCall(async (data) => {
-  if (!vapidConfigured()) {
-    throw new functions.https.HttpsError('failed-precondition', 'Push notifications are not configured on the server');
-  }
-  const subscription = validateSubscription(data?.subscription);
-  const timezone = validateTimezone(data?.timezone);
-  const trips = validateTrips(data?.trips);
-
-  const docRef = admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(subscription.endpoint));
-  const existing = await docRef.get();
-  // merge keeps lastReminderFor; the trips array itself is replaced whole
-  await docRef.set({
-    subscription,
-    timezone,
-    trips,
-    updatedAt: FieldValue.serverTimestamp(),
-    ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
-  }, { merge: true });
-
-  console.log(`[PUSH] Saved subscription ${docRef.id} (${trips.length} trips, ${timezone})`);
-  return { ok: true, trips: trips.length };
-});
-
-/** Forget a device (the app also unsubscribes locally) */
-export const deletePushSubscription = functions.https.onCall(async (data) => {
-  const endpoint = data?.endpoint;
-  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
-    throw new functions.https.HttpsError('invalid-argument', 'endpoint is required');
-  }
-  await admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(endpoint)).delete();
-  return { ok: true };
-});
-
 /**
- * Push a sample reminder to one device right now, so a user can confirm
- * notifications reach their phone without waiting for 8pm.
+ * A device asked for a sample push (the app stamped testRequestedAt): send
+ * the next trip day's reminder, or a hello if no trip day has workouts, and
+ * write back the outcome for the app to show. A Firestore trigger rather
+ * than a callable so nothing here needs an invoker IAM policy.
  */
-export const sendTripReminderTest = functions.https.onCall(async (data) => {
-  configureWebPush();
-  const endpoint = data?.endpoint;
-  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
-    throw new functions.https.HttpsError('invalid-argument', 'endpoint is required');
-  }
-  const docRef = admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(endpoint));
-  const snapshot = await docRef.get();
-  const doc = snapshot.data() as PushSubscriptionDoc | undefined;
-  if (!doc) {
-    throw new functions.https.HttpsError('not-found', 'This device is not registered for reminders');
-  }
+export const onPushSubscriptionTestRequested = functions.firestore
+  .document(`${PUSH_COLLECTION}/{id}`)
+  .onUpdate(async (change) => {
+    const before = change.before.data() as PushSubscriptionDoc;
+    const after = parseSubscriptionDoc(change.after.data());
+    const requestedAt = after?.testRequestedAt;
+    if (!after || !requestedAt || before.testRequestedAt === requestedAt) {
+      return;
+    }
 
-  // the next trip day from tomorrow on, else a generic hello
-  const { dateISO: today } = localNow(new Date(), doc.timezone);
-  let payload: string | null = null;
-  let message = 'Test reminder sent';
-  for (let offset = 1; offset <= REMINDER_MAX_TRIP_DAYS && !payload; offset++) {
-    const dateISO = addDaysISO(today, offset);
-    const trip = tripOn(doc.trips, dateISO);
-    if (!trip) continue;
-    const workouts = closestWorkouts(trip, dateISO, await loadPublishedBeatdowns());
-    if (workouts.length === 0) continue;
-    const label = offset === 1 ? 'Tomorrow' : new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
-    payload = reminderPayload(trip, dateISO, workouts, label);
-    message = `Sent a preview of your ${label.toLowerCase() === 'tomorrow' ? 'reminder for tomorrow' : `${label} reminder`}`;
-  }
-  if (!payload) {
-    payload = JSON.stringify({
-      notification: {
-        title: 'F3 Near Me reminders are on',
-        body: `We'll ping you at ${REMINDER_HOUR - 12}pm the night before each trip day.`,
-        icon: '/assets/icon/android-chrome-192x192.png',
-        tag: 'trip-reminder-test',
-        data: { onActionClick: { default: { operation: 'navigateLastFocusedOrOpen', url: '/trips' } } },
-      },
-    });
-  }
+    const reply = (ok: boolean, message: string) =>
+      change.after.ref.set({ testResult: { requestedAt, ok, message } }, { merge: true });
 
-  const sent = await sendPush(docRef, doc, payload);
-  if (!sent) {
-    throw new functions.https.HttpsError('unavailable', 'The push service rejected the message; try turning reminders off and on again');
-  }
-  return { ok: true, message };
-});
+    try {
+      configureWebPush();
+      // the next trip day from tomorrow on, else a generic hello
+      const { dateISO: today } = localNow(new Date(), after.timezone);
+      let payload: string | null = null;
+      let message = 'Sent a hello — reminders are working';
+      let beatdowns: Array<Beatdown & { id: string }> | null = null;
+      for (let offset = 1; offset <= REMINDER_MAX_TRIP_DAYS && !payload; offset++) {
+        const dateISO = addDaysISO(today, offset);
+        const trip = tripOn(after.trips, dateISO);
+        if (!trip) continue;
+        beatdowns = beatdowns ?? await loadPublishedBeatdowns();
+        const workouts = closestWorkouts(trip, dateISO, beatdowns);
+        if (workouts.length === 0) continue;
+        const label = offset === 1 ? 'Tomorrow' : new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+        payload = reminderPayload(trip, dateISO, workouts, label);
+        message = offset === 1 ? 'Sent a preview of your reminder for tomorrow' : `Sent a preview of your ${label} reminder`;
+      }
+      if (!payload) {
+        payload = JSON.stringify({
+          notification: {
+            title: 'F3 Near Me reminders are on',
+            body: `We'll ping you at ${REMINDER_HOUR - 12}pm the night before each trip day.`,
+            icon: '/assets/icon/android-chrome-192x192.png',
+            tag: 'trip-reminder-test',
+            data: { onActionClick: { default: { operation: 'navigateLastFocusedOrOpen', url: '/trips' } } },
+          },
+        });
+      }
+
+      const sent = await sendPush(change.after.ref, after, payload);
+      if (sent) {
+        await reply(true, message);
+      } else if ((await change.after.ref.get()).exists) {
+        await reply(false, 'The push service rejected the message; try turning reminders off and on again');
+      }
+    } catch (error) {
+      console.error(`[PUSH] Test push failed for ${change.after.id}:`, error);
+      await reply(false, error instanceof Error ? error.message : 'Could not send a test push').catch(() => {});
+    }
+  });
 
 /**
  * Every 15 minutes: for each device where it's 8pm local time, send
@@ -2571,14 +2554,15 @@ export const scheduledTripReminders = functions
     let skipped = 0;
 
     for (const docSnap of snapshot.docs) {
-      const doc = docSnap.data() as PushSubscriptionDoc;
+      const doc = parseSubscriptionDoc(docSnap.data());
+      if (!doc) continue;
       try {
-        const { dateISO: today, hour } = localNow(now, doc.timezone || 'UTC');
+        const { dateISO: today, hour } = localNow(now, doc.timezone);
         if (hour !== REMINDER_HOUR) continue;
         const tomorrow = addDaysISO(today, 1);
         if (doc.lastReminderFor === tomorrow) continue;
 
-        const trip = tripOn(doc.trips ?? [], tomorrow);
+        const trip = tripOn(doc.trips, tomorrow);
         if (!trip) continue;
 
         beatdowns = beatdowns ?? await loadPublishedBeatdowns();

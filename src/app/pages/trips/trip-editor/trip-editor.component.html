@@ -86,33 +86,20 @@
     <section class="field">
       <h2 class="field-label">When</h2>
       <div class="dates">
-        <div class="date">
+        <label class="date">
           <span class="date-label">From</span>
-          <ion-datetime-button datetime="trip-start"></ion-datetime-button>
-        </div>
+          <input type="date" [value]="startDate" [min]="minDate" [max]="maxDate" (change)="onStartChange($event)" required>
+        </label>
         <ion-icon name="arrow-forward" class="arrow"></ion-icon>
-        <div class="date">
+        <label class="date">
           <span class="date-label">To</span>
-          <ion-datetime-button datetime="trip-end"></ion-datetime-button>
-        </div>
+          <input type="date" [value]="endDate" [min]="startDate || minDate" [max]="maxDate" (change)="onEndChange($event)" required>
+        </label>
       </div>
       <p class="note" [class.error]="tooLong">
         <ng-container *ngIf="!tooLong">{{ dayCount }} day{{ dayCount === 1 ? '' : 's' }}</ng-container>
-        <ng-container *ngIf="tooLong">Trips can run up to {{ 60 }} days</ng-container>
+        <ng-container *ngIf="tooLong">Trips can run up to {{ maxTripDays }} days</ng-container>
       </p>
-
-      <ion-modal [keepContentsMounted]="true">
-        <ng-template>
-          <ion-datetime id="trip-start" presentation="date" [value]="startDate" [min]="minDate" [max]="maxDate"
-            [showDefaultButtons]="true" (ionChange)="onStartChange($event)"></ion-datetime>
-        </ng-template>
-      </ion-modal>
-      <ion-modal [keepContentsMounted]="true">
-        <ng-template>
-          <ion-datetime id="trip-end" presentation="date" [value]="endDate" [min]="startDate || minDate" [max]="maxDate"
-            [showDefaultButtons]="true" (ionChange)="onEndChange($event)"></ion-datetime>
-        </ng-template>
-      </ion-modal>
     </section>
 
     <!-- how far -->

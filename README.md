@@ -39,19 +39,23 @@ trip. Trips live only on the device, in `localStorage` under a versioned key
 exempt from Safari's storage eviction. See `src/app/services/trips.service.ts`.
 
 Turning on **reminders** subscribes the browser to web push (Angular's
-service worker handles the `push` event and the tap) and registers the
-subscription, the saved trips and the device timezone with the
-`savePushSubscription` callable, which stores them in the `pushSubscriptions`
-collection (Firestore rules deny clients, so the callables are the only way
-in). `scheduledTripReminders` runs every 15 minutes and, for each device where
-it is 8pm local time and tomorrow is a trip day, pushes tomorrow's three
-closest workouts. The app re-registers on every launch and whenever trips
-change, so the timezone follows the traveler. Reminders need the VAPID keys in
-`functions/.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`);
-the public key is also in `src/environments/*.ts`. Generate a pair with
-`npx web-push generate-vapid-keys` — changing it invalidates every existing
-subscription, so don't rotate it casually. On iPhone, web push only works
-once the app is added to the Home Screen (iOS 16.4+).
+service worker handles the `push` event and the tap) and writes the
+subscription, the saved trips and the device timezone straight to
+`pushSubscriptions/{sha256(endpoint)}`. The Firestore rules (still deny-all
+everywhere else) validate that doc's shape, pin its id to the endpoint, and
+never allow listing, so the collection can't be enumerated and no callable or
+invoker IAM policy is involved. `scheduledTripReminders` runs every 15 minutes
+and, for each device where it is 8pm local time and tomorrow is a trip day,
+pushes tomorrow's three closest workouts. "Send me a test" stamps the doc with
+`testRequestedAt`; the `onPushSubscriptionTestRequested` trigger sends a sample
+and writes back `testResult`. The app re-registers on every launch and whenever
+trips change, so the timezone follows the traveler. Reminders need the VAPID
+keys in `functions/.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
+`VAPID_SUBJECT`); the public key is also in `src/environments/*.ts`. Generate a
+pair with `npx web-push generate-vapid-keys` — changing it invalidates every
+existing subscription, so don't rotate it casually. On iPhone, web push only
+works once the app is added to the Home Screen (iOS 16.4+). Rules deploy by
+hand: `firebase deploy --only firestore:rules`.
 
 ### Cloud Functions
 
@@ -67,9 +71,7 @@ once the app is added to the Home Screen (iOS 16.4+).
 | `adminUpdateSingleLocation` | Callable | Update a single location |
 | `adminRefreshSpecificLocations` | Callable | Refresh a batch of locations |
 | `adminRerunWebhooks` | Callable | Re-process webhooks after a date |
-| `savePushSubscription` | Callable | Register a device's push subscription, trips and timezone for reminders |
-| `deletePushSubscription` | Callable | Forget a device (reminders turned off) |
-| `sendTripReminderTest` | Callable | Push a sample reminder to one device right now |
+| `onPushSubscriptionTestRequested` | Firestore (pushSubscriptions update) | Push a sample reminder when the app stamps `testRequestedAt` |
 | `scheduledTripReminders` | Pub/Sub (every 15 min) | Send 8pm-local reminders with tomorrow's closest workouts |
 
 ## Prerequisites

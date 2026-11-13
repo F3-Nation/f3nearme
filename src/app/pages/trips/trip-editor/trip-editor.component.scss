@@ -111,12 +111,14 @@ ion-searchbar {
   .date {
     display: flex;
     flex: 1;
+    min-width: 0;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 4px;
     padding: 10px 12px;
     border-radius: 12px;
     background: var(--ion-color-light);
+    cursor: pointer;
   }
 
   .date-label {
@@ -125,11 +127,25 @@ ion-searchbar {
     color: var(--ion-color-medium-shade);
   }
 
-  ion-datetime-button {
-    &::part(native) {
-      padding: 4px 0;
-      background: transparent;
-      font-weight: 700;
+  input[type="date"] {
+    width: 100%;
+    min-height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    font-size: 16px; // under 16px iOS zooms the page on focus
+    font-weight: 700;
+    color: var(--ion-text-color);
+    -webkit-appearance: none;
+    appearance: none;
+
+    &::-webkit-date-and-time-value {
+      text-align: left;
+    }
+
+    &::-webkit-calendar-picker-indicator {
+      opacity: 0.6;
     }
   }
 
