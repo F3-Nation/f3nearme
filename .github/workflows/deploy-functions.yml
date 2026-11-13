@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20 # matches functions/package.json engines
+          node-version: 22 # matches functions/package.json engines
           cache: npm
           cache-dependency-path: functions/package-lock.json
 

@@ -14,7 +14,7 @@
     "export-prod-data": "GOOGLE_APPLICATION_CREDENTIALS=./service-account.json node ../scripts/export-prod-data.js"
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "lib/index.js",
   "dependencies": {

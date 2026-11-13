@@ -74,7 +74,7 @@ once the app is added to the Home Screen (iOS 16.4+).
 
 ## Prerequisites
 
-- **Node.js 20.x** (`node -v` to verify)
+- **Node.js 22.x** (`node -v` to verify; the Cloud Functions runtime is Node 22)
 - **Java 11+** (required by Firebase emulators — `sudo apt install openjdk-21-jre-headless`)
 - **Firebase CLI** (`npm install -g firebase-tools`) — must be on PATH; the emulator scripts call `firebase` directly
 - **Ionic CLI** (`npm install -g @ionic/cli`)
