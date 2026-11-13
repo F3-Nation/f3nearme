@@ -28,6 +28,31 @@ there is no bulk endpoint for either). The result is cached in Cloud Storage
 API calls) and merged into `all.json` as optional `nextDate` / `nextQ` / `hcCount` fields,
 which the nearby cards show when the rendered day matches `nextDate`.
 
+### Trips and night-before reminders
+
+The app has two tabs: **Near me** (workouts around your current location) and
+**Trips**. A trip is a place (an address looked up via OpenStreetMap's
+Nominatim, or one of the cities that already has F3 workouts), a date range
+and a search radius; the tab lists the closest workouts for each day of the
+trip. Trips live only on the device, in `localStorage` under a versioned key
+(`f3nearme.trips`), which survives app updates and, for an installed PWA, is
+exempt from Safari's storage eviction. See `src/app/services/trips.service.ts`.
+
+Turning on **reminders** subscribes the browser to web push (Angular's
+service worker handles the `push` event and the tap) and registers the
+subscription, the saved trips and the device timezone with the
+`savePushSubscription` callable, which stores them in the `pushSubscriptions`
+collection (Firestore rules deny clients, so the callables are the only way
+in). `scheduledTripReminders` runs every 15 minutes and, for each device where
+it is 8pm local time and tomorrow is a trip day, pushes tomorrow's three
+closest workouts. The app re-registers on every launch and whenever trips
+change, so the timezone follows the traveler. Reminders need the VAPID keys in
+`functions/.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`);
+the public key is also in `src/environments/*.ts`. Generate a pair with
+`npx web-push generate-vapid-keys` — changing it invalidates every existing
+subscription, so don't rotate it casually. On iPhone, web push only works
+once the app is added to the Home Screen (iOS 16.4+).
+
 ### Cloud Functions
 
 | Function | Trigger | Description |
@@ -42,6 +67,10 @@ which the nearby cards show when the rendered day matches `nextDate`.
 | `adminUpdateSingleLocation` | Callable | Update a single location |
 | `adminRefreshSpecificLocations` | Callable | Refresh a batch of locations |
 | `adminRerunWebhooks` | Callable | Re-process webhooks after a date |
+| `savePushSubscription` | Callable | Register a device's push subscription, trips and timezone for reminders |
+| `deletePushSubscription` | Callable | Forget a device (reminders turned off) |
+| `sendTripReminderTest` | Callable | Push a sample reminder to one device right now |
+| `scheduledTripReminders` | Pub/Sub (every 15 min) | Send 8pm-local reminders with tomorrow's closest workouts |
 
 ## Prerequisites
 
@@ -262,10 +291,15 @@ firebase functions:config:set f3.client="f3nearme"
 │   ├── app/
 │   │   ├── pages/
 │   │   │   ├── admin/       # Admin page for manual sync controls
-│   │   │   ├── nearby/      # Main map/list view
+│   │   │   ├── nearby/      # Main list view (Near me tab)
+│   │   │   ├── tabs/        # Floating tab bar shell for nearby + trips
+│   │   │   ├── trips/       # Downrange trip planner (Trips tab) + trip editor modal
 │   │   │   └── workout/     # Individual workout detail
 │   │   ├── services/
 │   │   │   ├── beatdown.service.ts  # Data fetching (JSON cache + Firestore fallback)
+│   │   │   ├── trips.service.ts     # Saved trips (localStorage, versioned)
+│   │   │   ├── push.service.ts      # Web push subscription + reminder registration
+│   │   │   ├── geocoding.service.ts # Address lookup (Nominatim)
 │   │   │   └── http.service.ts
 │   │   └── pipes/
 │   ├── environments/        # Angular environment configs

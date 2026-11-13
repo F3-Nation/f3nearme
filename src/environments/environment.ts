@@ -15,6 +15,8 @@ export const environment = {
   },
   // Base URL for JSON data files served from Cloud Storage
   dataUrl: 'https://storage.googleapis.com/f3-workout.appspot.com/data',
+  // Public half of the VAPID key pair the backend signs trip reminders with
+  vapidPublicKey: 'BF4Rw3VkVRNRzipLAqnieq3Vlw0SnhRn_MtaZtXIyzAg-5wlIqMVYLlHP03XRPGRaK4myBRQmy_s8LNrAnPq_Os',
   // Set to true to connect to local Firebase emulators
   useEmulators: false,
   emulators: {

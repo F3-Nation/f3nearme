@@ -10,6 +10,8 @@ import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { Request, Response } from 'express';
 import { Storage } from '@google-cloud/storage';
+import * as webpush from 'web-push';
+import { createHash } from 'crypto';
 
 interface MapWebhook {
   action: 'map.updated'|'map.deleted';
@@ -2240,3 +2242,364 @@ if (process.env.FUNCTIONS_EMULATOR === 'true') {
     }
   });
 }
+
+// ============================================================================
+// Trip reminders (web push)
+//
+// The app saves a user's downrange trips on the device. When they turn on
+// reminders, it registers the browser's push subscription here along with
+// the trips and the device timezone. Every 15 minutes the scheduler looks
+// for devices where it's 8pm local time and tomorrow falls inside a trip,
+// and pushes the closest workouts for tomorrow. Payloads are shaped for the
+// Angular service worker, which shows the notification and opens /trips on
+// tap. Firestore rules deny all client access, so these callables are the
+// only way in and out of the collection.
+// ============================================================================
+
+const PUSH_COLLECTION = 'pushSubscriptions';
+/** Local hour the reminder goes out (the evening before a trip day) */
+const REMINDER_HOUR = 20;
+/** How many workouts a reminder lists */
+const REMINDER_MAX_WORKOUTS = 3;
+const REMINDER_MAX_TRIPS = 20;
+const REMINDER_MAX_TRIP_DAYS = 60;
+const REMINDER_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+interface ReminderTrip {
+  id: string;
+  name: string;
+  lat: number;
+  long: number;
+  startDate: string; // YYYY-MM-DD, local to the device
+  endDate: string;
+  radiusMiles: number;
+}
+
+interface PushSubscriptionDoc {
+  subscription: { endpoint: string; keys: { p256dh: string; auth: string } };
+  timezone: string;
+  trips: ReminderTrip[];
+  createdAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+  /** The trip day the last reminder covered, so a day is only sent once */
+  lastReminderFor?: string;
+  lastReminderAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+}
+
+interface ReminderWorkout {
+  id: string;
+  name: string;
+  timeString: string;
+  miles: number;
+}
+
+function vapidConfigured(): boolean {
+  return !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+}
+
+function configureWebPush(): void {
+  if (!vapidConfigured()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Push notifications are not configured on the server');
+  }
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:taylor.matt777@gmail.com',
+    process.env.VAPID_PUBLIC_KEY!,
+    process.env.VAPID_PRIVATE_KEY!,
+  );
+}
+
+/** Endpoints are long unguessable URLs; hash them into a stable doc id */
+function subscriptionDocId(endpoint: string): string {
+  return createHash('sha256').update(endpoint).digest('hex');
+}
+
+function isISODate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value));
+}
+
+function validateSubscription(input: any): PushSubscriptionDoc['subscription'] {
+  const endpoint = input?.endpoint;
+  const p256dh = input?.keys?.p256dh;
+  const auth = input?.keys?.auth;
+  if (typeof endpoint !== 'string' || !/^https:\/\/.{10,2000}$/.test(endpoint) ||
+      typeof p256dh !== 'string' || p256dh.length > 200 ||
+      typeof auth !== 'string' || auth.length > 100) {
+    throw new functions.https.HttpsError('invalid-argument', 'A valid push subscription is required');
+  }
+  return { endpoint, keys: { p256dh, auth } };
+}
+
+function validateTimezone(input: unknown): string {
+  if (typeof input === 'string' && input.length <= 64) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: input });
+      return input;
+    } catch {
+      // fall through
+    }
+  }
+  return 'UTC';
+}
+
+function validateTrips(input: unknown): ReminderTrip[] {
+  if (!Array.isArray(input)) return [];
+  const trips: ReminderTrip[] = [];
+  for (const raw of input.slice(0, REMINDER_MAX_TRIPS)) {
+    const t = raw ?? {};
+    const lat = Number(t.lat);
+    const long = Number(t.long);
+    const radius = Number(t.radiusMiles);
+    if (typeof t.id !== 'string' || !t.id || t.id.length > 64) continue;
+    if (!isISODate(t.startDate) || !isISODate(t.endDate)) continue;
+    if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(long) || Math.abs(long) > 180) continue;
+    const [startDate, endDate] = t.startDate <= t.endDate ? [t.startDate, t.endDate] : [t.endDate, t.startDate];
+    trips.push({
+      id: t.id,
+      name: String(t.name ?? '').slice(0, 60) || 'your trip',
+      lat,
+      long,
+      startDate,
+      endDate: addDaysISO(startDate, Math.min(daysBetweenISO(startDate, endDate), REMINDER_MAX_TRIP_DAYS - 1)),
+      radiusMiles: Number.isFinite(radius) ? Math.min(Math.max(radius, 1), 200) : 20,
+    });
+  }
+  return trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
+}
+
+/** YYYY-MM-DD plus n days, done in UTC so DST can't shift the date */
+function addDaysISO(iso: string, days: number): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function daysBetweenISO(fromISO: string, toISO: string): number {
+  return Math.round((Date.parse(`${toISO}T12:00:00Z`) - Date.parse(`${fromISO}T12:00:00Z`)) / 86400000);
+}
+
+function weekdayOfISO(iso: string): string {
+  return REMINDER_DAYS[new Date(`${iso}T12:00:00Z`).getUTCDay()];
+}
+
+/** The wall-clock date and hour right now in a timezone */
+function localNow(now: Date, timeZone: string): { dateISO: string; hour: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  }).formatToParts(now);
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
+  return {
+    dateISO: `${get('year')}-${get('month')}-${get('day')}`,
+    hour: Number(get('hour')) % 24,
+  };
+}
+
+/** all.json as published to the CDN (what the app renders from) */
+async function loadPublishedBeatdowns(): Promise<Array<Beatdown & { id: string }>> {
+  const [contents] = await storage.bucket(BUCKET_NAME).file(`${DATA_PREFIX}/all.json`).download();
+  return JSON.parse(contents.toString('utf8'));
+}
+
+/** The closest open workouts to a trip's address on a given date */
+function closestWorkouts(trip: ReminderTrip, dateISO: string, beatdowns: Array<Beatdown & { id: string }>): ReminderWorkout[] {
+  const weekday = weekdayOfISO(dateISO);
+  return beatdowns
+    .filter(bd => bd.dayOfWeek?.toLowerCase() === weekday && bd.exceptions?.[dateISO]?.status !== 'closed')
+    .map(bd => ({
+      id: bd.id,
+      name: bd.name,
+      timeString: bd.exceptions?.[dateISO]?.timeString || bd.timeString,
+      miles: milesBetween(bd.lat, bd.long, trip.lat, trip.long),
+    }))
+    .filter(w => w.miles <= trip.radiusMiles)
+    .sort((a, b) => a.miles - b.miles)
+    .slice(0, REMINDER_MAX_WORKOUTS);
+}
+
+/** The first trip covering a date, trips being sorted by start */
+function tripOn(trips: ReminderTrip[], dateISO: string): ReminderTrip | undefined {
+  return trips.find(t => t.startDate <= dateISO && dateISO <= t.endDate);
+}
+
+/** The push payload the Angular service worker turns into a notification */
+function reminderPayload(trip: ReminderTrip, dateISO: string, workouts: ReminderWorkout[], label: string): string {
+  const startTime = (w: ReminderWorkout) => w.timeString.split(/\s*-\s*/)[0];
+  const lines = workouts.map(w => `${startTime(w)} · ${w.name} · ${w.miles.toFixed(1)} mi`);
+  return JSON.stringify({
+    notification: {
+      title: `${label} near ${trip.name}`,
+      body: lines.join('\n'),
+      icon: '/assets/icon/android-chrome-192x192.png',
+      badge: '/assets/icon/favicon-32x32.png',
+      tag: `trip-${trip.id}-${dateISO}`,
+      data: {
+        tripId: trip.id,
+        dateISO,
+        onActionClick: {
+          default: { operation: 'navigateLastFocusedOrOpen', url: '/trips' },
+        },
+      },
+    },
+  });
+}
+
+/**
+ * Deliver a payload; a 404/410 means the browser dropped the subscription
+ * (app uninstalled, permission revoked), so the record goes too.
+ */
+async function sendPush(docRef: admin.firestore.DocumentReference, doc: PushSubscriptionDoc, payload: string): Promise<boolean> {
+  try {
+    await webpush.sendNotification(doc.subscription, payload, { TTL: 12 * 60 * 60, urgency: 'normal' });
+    return true;
+  } catch (error: any) {
+    const status = Number(error?.statusCode);
+    if (status === 404 || status === 410) {
+      console.log(`[PUSH] Subscription ${docRef.id} is gone (${status}); removing`);
+      await docRef.delete();
+    } else {
+      console.error(`[PUSH] Failed to send to ${docRef.id}:`, error?.body || error?.message || error);
+    }
+    return false;
+  }
+}
+
+/** Register (or refresh) a device's subscription, trips and timezone */
+export const savePushSubscription = functions.https.onCall(async (data) => {
+  if (!vapidConfigured()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Push notifications are not configured on the server');
+  }
+  const subscription = validateSubscription(data?.subscription);
+  const timezone = validateTimezone(data?.timezone);
+  const trips = validateTrips(data?.trips);
+
+  const docRef = admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(subscription.endpoint));
+  const existing = await docRef.get();
+  // merge keeps lastReminderFor; the trips array itself is replaced whole
+  await docRef.set({
+    subscription,
+    timezone,
+    trips,
+    updatedAt: FieldValue.serverTimestamp(),
+    ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+  }, { merge: true });
+
+  console.log(`[PUSH] Saved subscription ${docRef.id} (${trips.length} trips, ${timezone})`);
+  return { ok: true, trips: trips.length };
+});
+
+/** Forget a device (the app also unsubscribes locally) */
+export const deletePushSubscription = functions.https.onCall(async (data) => {
+  const endpoint = data?.endpoint;
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
+    throw new functions.https.HttpsError('invalid-argument', 'endpoint is required');
+  }
+  await admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(endpoint)).delete();
+  return { ok: true };
+});
+
+/**
+ * Push a sample reminder to one device right now, so a user can confirm
+ * notifications reach their phone without waiting for 8pm.
+ */
+export const sendTripReminderTest = functions.https.onCall(async (data) => {
+  configureWebPush();
+  const endpoint = data?.endpoint;
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
+    throw new functions.https.HttpsError('invalid-argument', 'endpoint is required');
+  }
+  const docRef = admin.firestore().collection(PUSH_COLLECTION).doc(subscriptionDocId(endpoint));
+  const snapshot = await docRef.get();
+  const doc = snapshot.data() as PushSubscriptionDoc | undefined;
+  if (!doc) {
+    throw new functions.https.HttpsError('not-found', 'This device is not registered for reminders');
+  }
+
+  // the next trip day from tomorrow on, else a generic hello
+  const { dateISO: today } = localNow(new Date(), doc.timezone);
+  let payload: string | null = null;
+  let message = 'Test reminder sent';
+  for (let offset = 1; offset <= REMINDER_MAX_TRIP_DAYS && !payload; offset++) {
+    const dateISO = addDaysISO(today, offset);
+    const trip = tripOn(doc.trips, dateISO);
+    if (!trip) continue;
+    const workouts = closestWorkouts(trip, dateISO, await loadPublishedBeatdowns());
+    if (workouts.length === 0) continue;
+    const label = offset === 1 ? 'Tomorrow' : new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    payload = reminderPayload(trip, dateISO, workouts, label);
+    message = `Sent a preview of your ${label.toLowerCase() === 'tomorrow' ? 'reminder for tomorrow' : `${label} reminder`}`;
+  }
+  if (!payload) {
+    payload = JSON.stringify({
+      notification: {
+        title: 'F3 Near Me reminders are on',
+        body: `We'll ping you at ${REMINDER_HOUR - 12}pm the night before each trip day.`,
+        icon: '/assets/icon/android-chrome-192x192.png',
+        tag: 'trip-reminder-test',
+        data: { onActionClick: { default: { operation: 'navigateLastFocusedOrOpen', url: '/trips' } } },
+      },
+    });
+  }
+
+  const sent = await sendPush(docRef, doc, payload);
+  if (!sent) {
+    throw new functions.https.HttpsError('unavailable', 'The push service rejected the message; try turning reminders off and on again');
+  }
+  return { ok: true, message };
+});
+
+/**
+ * Every 15 minutes: for each device where it's 8pm local time, send
+ * tomorrow's closest workouts if tomorrow is a trip day. Runs often enough
+ * to hit 8pm in every timezone (including :30 and :45 offsets); a device
+ * only gets one reminder per trip day.
+ */
+export const scheduledTripReminders = functions
+  .runWith({ timeoutSeconds: 300 })
+  .pubsub
+  .schedule('every 15 minutes')
+  .timeZone('UTC')
+  .onRun(async () => {
+    if (!vapidConfigured()) {
+      console.warn('[PUSH] VAPID keys not configured; skipping reminders');
+      return;
+    }
+    configureWebPush();
+
+    const now = new Date();
+    const snapshot = await admin.firestore().collection(PUSH_COLLECTION).get();
+    let beatdowns: Array<Beatdown & { id: string }> | null = null;
+    let sent = 0;
+    let skipped = 0;
+
+    for (const docSnap of snapshot.docs) {
+      const doc = docSnap.data() as PushSubscriptionDoc;
+      try {
+        const { dateISO: today, hour } = localNow(now, doc.timezone || 'UTC');
+        if (hour !== REMINDER_HOUR) continue;
+        const tomorrow = addDaysISO(today, 1);
+        if (doc.lastReminderFor === tomorrow) continue;
+
+        const trip = tripOn(doc.trips ?? [], tomorrow);
+        if (!trip) continue;
+
+        beatdowns = beatdowns ?? await loadPublishedBeatdowns();
+        const workouts = closestWorkouts(trip, tomorrow, beatdowns);
+
+        // mark the day handled either way so the next tick doesn't redo it
+        await docSnap.ref.set({ lastReminderFor: tomorrow, lastReminderAt: FieldValue.serverTimestamp() }, { merge: true });
+
+        if (workouts.length === 0) {
+          skipped++;
+          continue;
+        }
+        if (await sendPush(docSnap.ref, doc, reminderPayload(trip, tomorrow, workouts, 'Tomorrow'))) {
+          sent++;
+        }
+      } catch (error) {
+        console.error(`[PUSH] Reminder failed for ${docSnap.id}:`, error);
+      }
+    }
+
+    if (sent || skipped) {
+      console.log(`[PUSH] Reminders: ${sent} sent, ${skipped} trip days with no workouts in range (${snapshot.size} devices)`);
+    }
+  });

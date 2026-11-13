@@ -3,22 +3,17 @@ import {PreloadAllModules, RouterModule, Routes} from '@angular/router';
 
 const routes: Routes = [
   {
-    path: '',
-    redirectTo: '/nearby',
-    pathMatch: 'full',
-  },
-  {
-    path: 'nearby',
-    loadChildren: () =>
-        import('./pages/nearby/nearby.module').then(m => m.NearbyPageModule),
-  },
-  {
     path: 'workout',
     loadChildren: () => import('./pages/workout/workout.module').then(m => m.WorkoutPageModule)
   },
   {
     path: 'admin',
     loadChildren: () => import('./pages/admin/admin.module').then( m => m.AdminPageModule)
+  },
+  // the tabbed shell owns /nearby and /trips (and redirects / to /nearby)
+  {
+    path: '',
+    loadChildren: () => import('./pages/tabs/tabs.module').then(m => m.TabsPageModule)
   },
 ];
 @NgModule({

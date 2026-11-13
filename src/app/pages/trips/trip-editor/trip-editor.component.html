@@ -1,0 +1,136 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-button (click)="cancel()">Cancel</ion-button>
+    </ion-buttons>
+    <ion-title>{{ isEdit ? 'Edit trip' : 'New trip' }}</ion-title>
+    <ion-buttons slot="end">
+      <ion-button (click)="save()" [disabled]="!canSave || tooLong" [strong]="true">Save</ion-button>
+    </ion-buttons>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content>
+  <!-- where -->
+  <section class="field">
+    <h2 class="field-label">Where will you be?</h2>
+
+    <ng-container *ngIf="!place">
+      <ion-searchbar
+        mode="ios"
+        [value]="query"
+        [debounce]="150"
+        (ionInput)="onQueryInput($event)"
+        (keyup.enter)="searchAddress()"
+        inputmode="search"
+        enterkeyhint="search"
+        placeholder="Address, hotel, city or zip"
+        autofocus>
+      </ion-searchbar>
+
+      <ion-list lines="none" class="results" *ngIf="citySuggestions.length">
+        <ion-list-header><ion-label>Cities with F3 workouts</ion-label></ion-list-header>
+        <ion-item button detail="false" *ngFor="let city of citySuggestions" (click)="pickCity(city)">
+          <ion-icon slot="start" name="people-outline" color="primary"></ion-icon>
+          <ion-label class="ion-text-wrap">
+            <h3>{{ city.city }}</h3>
+            <p>{{ city.regions.join(', ') }}</p>
+          </ion-label>
+        </ion-item>
+      </ion-list>
+
+      <ion-button expand="block" fill="outline" class="search-button" (click)="searchAddress()" [disabled]="query.trim().length < 3 || searching">
+        <ion-spinner *ngIf="searching" slot="start" name="crescent"></ion-spinner>
+        <ion-icon *ngIf="!searching" slot="start" name="search-outline"></ion-icon>
+        {{ searching ? 'Looking up…' : 'Search this address' }}
+      </ion-button>
+
+      <ion-list lines="none" class="results" *ngIf="addressResults.length">
+        <ion-list-header><ion-label>Matching places</ion-label></ion-list-header>
+        <ion-item button detail="false" *ngFor="let result of addressResults" (click)="pickAddress(result)">
+          <ion-icon slot="start" name="location-outline" color="primary"></ion-icon>
+          <ion-label class="ion-text-wrap">
+            <h3>{{ result.label }}</h3>
+            <p>{{ result.placeName }}</p>
+          </ion-label>
+        </ion-item>
+      </ion-list>
+
+      <p class="note" *ngIf="searched && addressResults.length === 0">
+        Nothing matched that address. Try adding the city or state.
+      </p>
+      <p class="note error" *ngIf="searchError">{{ searchError }}</p>
+      <p class="note credit">Address search by OpenStreetMap</p>
+    </ng-container>
+
+    <div class="chosen" *ngIf="place">
+      <ion-icon name="location" color="primary"></ion-icon>
+      <div class="chosen-text">
+        <h3>{{ place.label }}</h3>
+        <p>{{ place.placeName }}</p>
+      </div>
+      <ion-button fill="clear" size="small" (click)="changePlace()">Change</ion-button>
+    </div>
+  </section>
+
+  <ng-container *ngIf="place">
+    <!-- name -->
+    <section class="field">
+      <h2 class="field-label">Call it</h2>
+      <ion-item lines="none" class="input-item">
+        <ion-input [(ngModel)]="name" [placeholder]="place.label" maxlength="40" autocapitalize="words"></ion-input>
+      </ion-item>
+    </section>
+
+    <!-- when -->
+    <section class="field">
+      <h2 class="field-label">When</h2>
+      <div class="dates">
+        <div class="date">
+          <span class="date-label">From</span>
+          <ion-datetime-button datetime="trip-start"></ion-datetime-button>
+        </div>
+        <ion-icon name="arrow-forward" class="arrow"></ion-icon>
+        <div class="date">
+          <span class="date-label">To</span>
+          <ion-datetime-button datetime="trip-end"></ion-datetime-button>
+        </div>
+      </div>
+      <p class="note" [class.error]="tooLong">
+        <ng-container *ngIf="!tooLong">{{ dayCount }} day{{ dayCount === 1 ? '' : 's' }}</ng-container>
+        <ng-container *ngIf="tooLong">Trips can run up to {{ 60 }} days</ng-container>
+      </p>
+
+      <ion-modal [keepContentsMounted]="true">
+        <ng-template>
+          <ion-datetime id="trip-start" presentation="date" [value]="startDate" [min]="minDate" [max]="maxDate"
+            [showDefaultButtons]="true" (ionChange)="onStartChange($event)"></ion-datetime>
+        </ng-template>
+      </ion-modal>
+      <ion-modal [keepContentsMounted]="true">
+        <ng-template>
+          <ion-datetime id="trip-end" presentation="date" [value]="endDate" [min]="startDate || minDate" [max]="maxDate"
+            [showDefaultButtons]="true" (ionChange)="onEndChange($event)"></ion-datetime>
+        </ng-template>
+      </ion-modal>
+    </section>
+
+    <!-- how far -->
+    <section class="field">
+      <h2 class="field-label">Look within</h2>
+      <ion-segment [(ngModel)]="radiusMiles" mode="ios" scrollable>
+        <ion-segment-button *ngFor="let miles of radiusOptions" [value]="miles">
+          <ion-label>{{ miles }} mi</ion-label>
+        </ion-segment-button>
+      </ion-segment>
+    </section>
+  </ng-container>
+</ion-content>
+
+<ion-footer *ngIf="place">
+  <ion-toolbar>
+    <ion-button expand="block" shape="round" (click)="save()" [disabled]="!canSave || tooLong">
+      {{ isEdit ? 'Save changes' : 'Save trip' }}
+    </ion-button>
+  </ion-toolbar>
+</ion-footer>
